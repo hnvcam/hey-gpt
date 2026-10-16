@@ -1,0 +1,17 @@
+[Unit]
+Description=Hey GPT Vietnamese controls and status indicator
+PartOf=graphical-session.target
+After=graphical-session.target hey-gpt.service
+Wants=hey-gpt.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 @APP@/tray.py
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=yes
+Environment=PYTHONDONTWRITEBYTECODE=1
+
+[Install]
+WantedBy=graphical-session.target

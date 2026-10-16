@@ -1,0 +1,26 @@
+[Unit]
+Description=Hey GPT Vietnamese local wake listener and status hub
+PartOf=graphical-session.target
+After=graphical-session.target pipewire-pulse.service
+
+[Service]
+Type=simple
+ExecStart=@PYTHON@ @APP@/daemon.py --engine-mode wav2vec2 --source mic_noise_suppressed
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=8
+UMask=0077
+RuntimeDirectory=hey-gpt
+RuntimeDirectoryMode=0700
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%t/hey-gpt
+RestrictAddressFamilies=AF_UNIX
+LockPersonality=yes
+RestrictSUIDSGID=yes
+Environment=PYTHONDONTWRITEBYTECODE=1
+
+[Install]
+WantedBy=graphical-session.target

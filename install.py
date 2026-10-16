@@ -1,0 +1,50 @@
+#!/usr/bin/env python3
+"""Register reviewed workspace app with user systemd and Chrome; no root."""
+import argparse
+import json
+import os
+from pathlib import Path
+import shlex
+import subprocess
+
+ROOT = Path(__file__).resolve().parent
+parser = argparse.ArgumentParser()
+parser.add_argument("--config-dir", type=Path, default=Path(os.environ.get("XDG_CONFIG_HOME", Path.home()/".config")))
+parser.add_argument("--stage-only", action="store_true", help="Write files without starting/enabling systemd")
+args = parser.parse_args()
+python = ROOT / ".venv/bin/python"
+if not python.exists():
+    raise SystemExit("Tạo .venv và cài requirements.txt trước; xem README.md.")
+subprocess.run([str(python), "-c", "import torch, transformers"], check=True)
+identity = json.loads((ROOT/"identity.json").read_text())
+host = ROOT / "native-host.sh"
+host.write_text("#!/bin/sh\nexec /usr/bin/python3 " + shlex.quote(str(ROOT/"native_host.py")) + ' "$@"\n')
+host.chmod(0o700)
+
+def unit_quote(path):
+    # systemd specifiers are expanded even inside quotes.
+    return '"' + str(path).replace("%", "%%").replace("\\", "\\\\").replace('"','\\"') + '"'
+
+unit = (ROOT/"systemd/hey-gpt.service.in").read_text()
+unit = unit.replace("@PYTHON@",unit_quote(python)).replace("@APP@/daemon.py",unit_quote(ROOT/"daemon.py"))
+service = args.config_dir/"systemd/user/hey-gpt.service"
+tray_service = args.config_dir/"systemd/user/hey-gpt-tray.service"
+manifest = args.config_dir/"google-chrome/NativeMessagingHosts/org.local.hey_gpt.json"
+for path in (service,tray_service,manifest):
+    path.parent.mkdir(parents=True, exist_ok=True)
+service.write_text(unit)
+tray_unit = (ROOT/"systemd/hey-gpt-tray.service.in").read_text().replace("@APP@/tray.py",unit_quote(ROOT/"tray.py"))
+tray_service.write_text(tray_unit)
+manifest.write_text(json.dumps({"name":"org.local.hey_gpt", "description":"Hey GPT local Vietnamese wake bridge",
+    "path":str(host),"type":"stdio", "allowed_origins":[f"chrome-extension://{identity['extension_id']}/"]},indent=2)+"\n")
+manifest.chmod(0o600)
+if not args.stage_only:
+    subprocess.run(["systemctl","--user","daemon-reload"],check=True)
+    subprocess.run(["systemctl","--user","enable","hey-gpt.service","hey-gpt-tray.service"],check=True)
+    subprocess.run(["systemctl","--user","restart","hey-gpt.service","hey-gpt-tray.service"],check=True)
+print("Đã ghi dịch vụ:",service)
+print("Đã ghi biểu tượng và bảng điều khiển:",tray_service)
+print("Đã đăng ký cầu nối Chrome:",manifest)
+print("Thư mục Load unpacked:",ROOT/"extension")
+print("Extension ID:",identity["extension_id"])
+print("Micro local mặc định tắt; bật bằng menu GPT hoặc tiện ích Chrome.")

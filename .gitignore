@@ -1,0 +1,47 @@
+# Local runtime, downloaded weights and personal voice data
+.venv/
+.tools-venv/
+venv/
+models/
+data/
+recordings/
+*.local.json
+native-host.sh
+
+# Credentials, network exports and local logs
+.env
+.env.*
+*.pem
+*.key
+*.p8
+*.p12
+*.pfx
+*.keystore
+*.har
+*.log
+
+# Audio, cached features and generated archives
+*.wav
+*.pcm
+*.mp3
+*.m4a
+*.ogg
+*.flac
+*.npz
+*.npy
+*.zip
+*.tar
+*.tar.gz
+
+# Python, build and editor output
+__pycache__/
+*.py[cod]
+.pytest_cache/
+build/
+dist/
+*.egg-info/
+outputs/
+backups/
+.idea/
+.vscode/
+.DS_Store

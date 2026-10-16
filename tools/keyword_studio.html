@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="vi"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Hey GPT · Bộ ghi âm từ khóa</title>
+<style>
+:root{color-scheme:dark;font-family:system-ui,sans-serif;background:#10171c;color:#edf3f5}body{max-width:960px;margin:auto;padding:28px}h1{font-size:28px}p{line-height:1.6;color:#b9cbd1}button{font:inherit;border:0;border-radius:8px;padding:12px 18px;cursor:pointer;background:#adf1cb;color:#10281d;margin:4px}button:disabled{opacity:.35;cursor:default}.secondary{background:#293c47;color:#ecf4f6}.danger{background:#f3b2a4;color:#382019}.panel{background:#1b2932;border:1px solid #354b59;border-radius:14px;padding:24px;margin:20px 0}#phrase{font-size:42px;margin:16px 0}#cue{font-size:24px;font-weight:700}.green{color:#9ef7bd}.amber{color:#f2d49a}table{width:100%;border-collapse:collapse}td,th{text-align:left;border-bottom:1px solid #35444e;padding:10px 6px}td button{font-size:13px;padding:7px}#folder{overflow-wrap:anywhere;font:13px monospace}progress{width:100%;accent-color:#9ef7bd}pre{white-space:pre-wrap}details{margin:20px 0}small{color:#a9bec9}.badge{color:#a3ebbd}
+</style>
+<h1>Bộ ghi âm từ khóa Hey GPT</h1>
+<p>20 mục · khoảng 3 phút. Đọc từng mục đang hiện bằng giọng bình thường. Chờ chữ <b>ĐỌC BÂY GIỜ</b>, đọc một lần rồi nghỉ. Không cần đọc số thứ tự hoặc hướng dẫn. Với mục im lặng, không đọc gì.</p>
+<p>Trước khi thu: tắt trợ lý Hey GPT và đóng Voice trong Chrome. Giữ tiếng quạt/ồn phòng như khi sử dụng; không cần cố làm phòng yên tĩnh. Công cụ lưu âm gốc và âm đã lọc trong project, không tải lên mạng và không mở ChatGPT.</p>
+<button id="all" onclick="act('record',{selection:'all'})">Bắt đầu thu 20 mục</button>
+<button id="stop" class="danger" onclick="act('stop')">Dừng thu</button>
+<button id="eval" class="secondary" onclick="act('evaluate')">Chạy kiểm tra từ bản ghi</button>
+<div class="panel" aria-live="polite"><div id="status">Đang kết nối…</div><div id="phrase">Chưa mở micro</div><div id="cue"></div><p id="hint"></p><progress id="progress" value="0" max="6"></progress><p id="folder"></p></div>
+<details open><summary>Danh sách đầy đủ — mỗi dòng là một lần đọc</summary><table><thead><tr><th>Mục</th><th>Đọc đúng câu này</th><th>Trạng thái</th><th></th></tr></thead><tbody id="plan"></tbody></table></details>
+<div id="result"></div>
+<p><small>Câu 1–3 của từ gọi dùng để chỉnh; hai câu còn lại dành kiểm chứng. Mỗi lệnh dừng có một câu chỉnh, một câu kiểm chứng. Kết quả này đo từ khóa trên âm thanh đã lưu; chưa đo thao tác Voice thật hay độ trễ khi chạy liên tục. Bản ghi cũ được giữ khi thu lại một câu.</small></p>
+<script>
+let rendered=false;
+async function act(route,data={}){try{const r=await fetch(route,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});const d=await r.json();if(!r.ok)alert(d.error);await update()}catch(e){document.getElementById('status').textContent='Mất kết nối công cụ ghi âm.'}}
+function el(id){return document.getElementById(id)}
+async function update(){const r=await fetch('status');const s=await r.json();const busy=['preparing','recording','evaluating'].includes(s.phase);el('all').disabled=busy;el('eval').disabled=busy||!s.completed.length;el('stop').disabled=!['preparing','recording'].includes(s.phase);el('status').textContent=s.message;el('folder').textContent=s.session?'Lưu tại: '+s.session:'Chưa tạo bản ghi.';
+ if(!rendered){for(const row of s.plan){const tr=document.createElement('tr');const n=document.createElement('td');n.textContent=row.id;const text=document.createElement('td');text.textContent=row.text||'[Im lặng] '+row.hint;const status=document.createElement('td');status.id='saved'+row.id;const action=document.createElement('td');const b=document.createElement('button');b.textContent='Thu câu này';b.className='secondary single';b.onclick=()=>act('record',{selection:row.id});action.append(b);tr.append(n,text,status,action);el('plan').append(tr)}rendered=true}
+ document.querySelectorAll('.single').forEach(b=>b.disabled=busy);for(const row of s.plan)el('saved'+row.id).textContent=s.completed.includes(row.id)?'Đã lưu WAV':'Chưa thu';
+ const row=s.current;el('phrase').textContent=row?(row.text||'Giữ im lặng'):'Chưa mở micro';el('hint').textContent=row?row.hint:'';el('progress').max=row?row.seconds:6;el('progress').value=s.elapsed;
+ el('cue').className='amber';el('cue').textContent='';if(s.phase==='preparing')el('cue').textContent='CHỜ · sắp mở micro';if(s.phase==='recording'){const wait=s.elapsed<1.5;el('cue').textContent=row.kind==='noise'?'MIC ĐANG THU · GIỮ IM LẶNG':wait?'MIC ĐANG THU · CHỜ MỘT NHỊP':'ĐỌC BÂY GIỜ · đọc một lần rồi nghỉ';if(!wait)el('cue').className='green'}
+ if(s.report){el('result').replaceChildren();const title=document.createElement('h2');title.textContent='Kết quả thử lại · '+s.report.device;el('result').append(title);const pre=document.createElement('pre');pre.textContent=Object.entries(s.report.summary).filter(([k])=>k.endsWith('/either')).map(([k,v])=>{const [source,split,mode]=k.split('/');return `${source==='raw'?'Âm gốc':'Âm đã lọc'} · ${split==='dev'?'mẫu chỉnh':'mẫu kiểm chứng'} · ${mode==='wake'?'gọi':'dừng'}: nhận đúng ${v.hit}/${v.positive} · kích hoạt nhầm ${v.false_trigger}/${v.negative}`}).join('\n');el('result').append(pre)}
+}
+async function poll(){try{await update()}catch(e){el('status').textContent='Công cụ chưa chạy hoặc đã đóng; micro của bộ thu đã dừng.'}setTimeout(poll,200)}poll();
+</script></html>

@@ -1,0 +1,5 @@
+# Current CUDA recognizer; install torch separately using the CUDA index in README.
+# Versions match the working local environment. Vosk is not used by the service.
+numpy==2.5.4
+transformers==4.57.6
+huggingface-hub==0.36.2

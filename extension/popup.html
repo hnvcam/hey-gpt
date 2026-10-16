@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="vi"><meta charset="utf-8"><title>Hey GPT</title>
+<link rel="stylesheet" href="popup.css">
+<body><h1>Hey GPT <span>LOCAL · TIẾNG VIỆT</span></h1>
+<p>Chọn tab ChatGPT rồi bật nghe từ khóa.</p>
+<label>Mở khi nghe “Hey GPT”<select id="mode"><option value="voice">Trò chuyện Voice</option><option value="dictate">Nhập bằng giọng nói</option></select></label>
+<div class="actions"><button id="arm">Bật trợ lý</button><button id="off">Tắt trợ lý</button></div>
+<section aria-live="polite"><strong id="mic">Micro local: đang kiểm tra</strong><p id="activity"></p><p id="turn"></p><p id="events"></p><p id="status"></p><p id="browser"></p></section>
+<p class="note">Gọi “Hey GPT”, đợi Voice mở rồi nói câu hỏi. Để kết thúc: nghỉ khoảng 1 giây rồi nói riêng “hết”, “kết thúc”, “dừng lại” hoặc “done”; hoặc chờ ChatGPT về idle rồi im lặng 15 giây. Trợ lý tự đóng Voice và chờ lần gọi tiếp.</p>
+<p class="note">Tắt trợ lý sẽ đóng micro local và yêu cầu kết thúc Voice ở tab đã chọn. Nếu mất kết nối hoặc đang Dictate, kiểm tra nút dừng trong ChatGPT.</p>
+<small id="version">0.6.1 · Nghe local liên tục · Không OpenAI API</small>
+<script src="popup.js"></script></body></html>
