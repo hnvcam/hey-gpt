@@ -32,7 +32,11 @@ def clean_voice_events(value):
     if not isinstance(value,dict):return {}
     count=value.get('event_count',0)
     types=value.get('event_types',[])
-    return {'source':'data-channel','connected':value.get('connected') is True,
+    playback=value.get('playback_state')
+    quiet=value.get('playback_quiet_ms')
+    return {'playback_state':playback if isinstance(playback,str) and playback in {'busy','quiet','unknown'} else 'unknown',
+            'playback_quiet_ms':min(max(quiet,0),3600000) if type(quiet) in {int,float} and 0<=quiet<=3600000 else 0,
+            'source':'data-channel','connected':value.get('connected') is True,
             'supported':value.get('supported') is True,
             'event_count':min(max(count,0),1000000000) if type(count) is int else 0,
             'event_types':[s for s in types[:8] if isinstance(s,str) and re.fullmatch(r'[a-z0-9_.]{1,80}',s)] if isinstance(types,list) else []}
@@ -40,18 +44,20 @@ def clean_voice_events(value):
 
 def clean_message(msg):
     """Validate the complete extension protocol before crossing the local socket."""
-    allowed = {"arm", "disarm", "status", "register", "report", "session", "resume", "activity", "defer"}
+    allowed = {"arm", "disarm", "status", "register", "report", "session", "resume", "activity", "defer", "voice-ready", "detach", "stop-vetoed"}
     if not isinstance(msg, dict) or msg.get("cmd") not in allowed:
         raise ValueError("unsupported-command")
     cmd = msg["cmd"]
     clean = {"cmd": cmd}
-    if cmd in {"session", "resume", "activity"}:
+    if cmd in {"session", "resume", "activity", "voice-ready", "stop-vetoed"}:
         token = msg.get("session")
         if not isinstance(token, str) or not 8 <= len(token) <= 64:
             raise ValueError("invalid-session")
         clean["session"] = token
     if cmd == "session":
         clean["existing"] = msg.get("existing") is True
+        if isinstance(msg.get("wake_id"), str) and len(msg["wake_id"]) == 32:
+            clean["wake_id"] = msg["wake_id"]
     if cmd == "activity":
         state = msg.get("ui_state")
         clean["ui_state"] = state if isinstance(state,str) and state in {"idle", "busy", "unknown"} else "busy" if msg.get("busy") is True else "unknown"

@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import secrets
 import signal
+import shutil
 import socket
 import struct
 import time
@@ -28,6 +29,7 @@ BROWSER_ERRORS = frozenset({
     'voice-button-missing-or-ambiguous','setup-required','target-tab-changed',
     'voice-not-open','voice-transition-pending','wrong-origin','no-page-result',
     'review-browser-permission-limit-or-start-button','another-chrome-connected',
+    'browser-start-failed','browser-transition-timeout','voice-not-ready',
 })
 
 
@@ -104,8 +106,17 @@ class Listener:
         self.browser_state = "IDLE"
         self.browser_detail = ""
         self.last_error = None
+        self.last_voice_stop = None
+        self.last_remote_audio = None
+        self.remote_audio_updated = None
+        self.stop_echo_suppressed = 0
         self.enabled = False
         self.stopping = False
+        self.wake_id = None
+        self.chimed_session = None
+        self.launch_task = None
+        self.chime_task = None
+        self.ready_sound = {"state": "idle", "count": 0}
         self.phase = "wake"
         self.phase_since = 0.0
         self.session = None
@@ -137,9 +148,11 @@ class Listener:
     def snapshot(self):
         return {"type": "status", "state": self.state, "detail": self.detail,
                 "local_mic_open": self.mic, "enabled": self.enabled,
-                "browser_connected": self.browser is not None,
+                "browser_connected": self.browser is not None, "wake_id": self.wake_id,
                 "browser_state": self.browser_state, "browser_detail": self.browser_detail,
                 "last_error": self.last_error, "listen_mode": self.phase,
+                "ready_sound": dict(self.ready_sound), "last_voice_stop": self.last_voice_stop,
+                "stop_echo_suppressed": self.stop_echo_suppressed,
                 "silence_seconds": self.silence_seconds,
                 "reply_ui_state": self.reply_guard.state_at(time.monotonic()),
                 "idle_remaining": self.reply_guard.remaining(time.monotonic(),self.last_activity,self.silence_seconds),
@@ -175,6 +188,12 @@ class Listener:
 
     async def disarm(self, detail="user-disarmed"):
         self.reply_guard.reset()
+        self.wake_id = None
+        for job in (self.launch_task, self.chime_task):
+            if job and not job.done():
+                job.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await job
         self.enabled = False
         self.recognition_epoch += 1
         if self.task:
@@ -188,21 +207,90 @@ class Listener:
             print(json.dumps({"event":"browser-error", **self.last_error}), flush=True)
         self.publish("DISARMED", detail)
 
-    async def arm(self, writer):
+    async def arm(self, writer=None):
         if self.task and not self.task.done():
-            self.send(writer, {"type": "error", "detail": "already-armed"})
             return
         sid = await unlocked_session()
         if not sid:
             self.publish("ERROR", "screen-locked-or-session-unavailable")
             return
-        self.owner = writer
+        self.owner = None
         self.enabled = True
         self.browser_detail = ""
         self.browser_state = "IDLE"
         self.phase, self.session = "wake", None
         self.phase_since = time.monotonic()
-        self.task = asyncio.create_task(self.listen(writer, sid))
+        self.task = asyncio.create_task(self.listen(None, sid))
+
+    async def launch_browser(self):
+        """Launch in the desktop user's service manager, outside the audio sandbox."""
+        try:
+            chrome = shutil.which('google-chrome')
+            if not chrome:
+                raise RuntimeError('browser-start-failed')
+            config = BASE / 'browser.local.json'
+            profile = json.loads(config.read_text()).get('profile', 'Default') if config.exists() else 'Default'
+            if not isinstance(profile, str) or not profile or '/' in profile or profile.startswith('-'):
+                raise RuntimeError('browser-start-failed')
+            await command('systemd-run', '--user', '--collect', '--quiet', '--no-block',
+                          '--unit=hey-gpt-chrome-' + secrets.token_hex(6),
+                          '--property=PartOf=graphical-session.target',
+                          chrome, '--profile-directory=' + profile, 'https://chatgpt.com/')
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            if self.enabled and self.phase == 'opening':
+                self.return_to_wake('browser-start-failed')
+
+    def return_to_wake(self, detail):
+        if self.chime_task and not self.chime_task.done():
+            self.chime_task.cancel()
+        self.recognition_epoch += 1
+        self.wake_id = None
+        self.phase, self.session = 'wake', None
+        self.phase_since = time.monotonic()
+        self.browser_state, self.browser_detail = 'IDLE', detail
+        if detail in BROWSER_ERRORS:
+            self.last_error = {'code': detail, 'at': int(time.time())}
+        self.publish('LISTENING', detail, self.mic)
+
+    def deliver_wake(self, writer):
+        self.send(writer, {'type': 'wake', 'id': self.wake_id, 'at': int(time.time()),
+                           'expires': int(time.time() + max(0, 90 - (time.monotonic() - self.phase_since)))})
+
+    async def begin_wake(self, writer=None):
+        self.wake_id = secrets.token_hex(16)
+        self.phase = 'opening'
+        self.phase_since = self.last_wake = time.monotonic()
+        self.publish('OPENING', 'opening-chrome-voice-local-still-listening', self.mic)
+        target = self.browser or writer
+        if target:
+            self.deliver_wake(target)
+        else:
+            self.launch_task = asyncio.create_task(self.launch_browser())
+
+    async def play_ready_chime(self, token):
+        if not self.enabled or self.phase != "conversation" or self.session != token:
+            return
+        try:
+            await command('paplay', '--client-name=Hey GPT ready', str(BASE / 'sounds/ready.wav'))
+            self.ready_sound.update(state='played', count=self.ready_sound['count'] + 1, at=int(time.time()))
+            self.publish(self.state, self.detail, self.mic)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self.ready_sound['state'] = 'error'
+            self.last_error = {'code': 'ready-sound-unavailable', 'at': int(time.time())}
+            self.publish(self.state, self.detail, self.mic)
+
+    def browser_disconnected(self):
+        self.browser = None
+        self.browser_state = 'IDLE'
+        if self.enabled:
+            # Closing Chrome is not an instruction to stop the local wake mic.
+            self.return_to_wake('browser-disconnected-local-still-listening')
+        else:
+            self.publish(self.state, self.detail, self.mic)
 
     async def dispatch(self, msg, writer):
         action = msg.get("cmd")
@@ -219,6 +307,8 @@ class Listener:
                 self.extension_version=version
             # Popup polling must not erase the cause of an automatic shutdown.
             self.publish(self.state, self.detail, self.mic)
+            if self.enabled and self.phase == "opening" and self.wake_id:
+                self.deliver_wake(writer)
         elif action == "arm" and writer is self.browser:
             await self.arm(writer)
         elif action in {"disarm", "disable"}:
@@ -227,10 +317,15 @@ class Listener:
             if self.browser and action == "disable":
                 self.send(self.browser, {"type": "control", "action": "disable"})
         elif action == "enable":
-            if self.browser:
-                self.send(self.browser, {"type": "control", "action": "enable"})
+            await self.arm()
+        elif action == 'wake':
+            # Same-user manual fallback follows the same fresh-wake rules. This
+            # command is deliberately absent from the extension/native protocol.
+            if (self.enabled and self.mic and self.phase == 'wake'
+                    and await unlocked_session()):
+                await self.begin_wake()
             else:
-                self.publish("DISARMED", "chrome-extension-required")
+                self.send(writer, {'type': 'error', 'detail': 'assistant-not-listening'})
         elif action == "report" and writer is self.browser:
             allowed = {"IDLE", "VOICE", "DICTATION", "WAITING", "NEEDS_ACTION", "STOPPED"}
             if msg.get("state") in allowed:
@@ -247,27 +342,57 @@ class Listener:
                 self.publish(self.state, self.detail, self.mic)
         elif action == "session" and writer is self.browser and self.enabled:
             token = msg.get("session")
-            if (self.phase == "opening" or (self.phase == "wake" and msg.get("existing") is True)) and isinstance(token, str) and 8 <= len(token) <= 64:
+            fresh_wake = self.phase == "opening" and self.wake_id and msg.get("wake_id") == self.wake_id
+            explicit_attach = self.phase == "wake" and msg.get("existing") is True
+            if (fresh_wake or explicit_attach) and isinstance(token, str) and 8 <= len(token) <= 64:
                 self.session = token
+                self.chimed_session = None
+                if msg.get("existing") is True and not self.wake_id:
+                    self.wake_id = token
                 self.phase = "conversation"
                 self.reply_guard.reset()
                 self.voice_events = {}
+                self.last_remote_audio = self.remote_audio_updated = None
                 self.phase_since = self.last_activity = time.monotonic()
                 self.browser_state = "VOICE"
                 self.publish("CONVERSATION", "listening-for-stop-commands", self.mic)
+        elif action == 'voice-ready' and writer is self.browser:
+            if (self.enabled and self.phase == 'conversation' and self.wake_id
+                    and msg.get('session') == self.session and self.chimed_session != self.session):
+                if await unlocked_session():
+                    self.chimed_session = self.session
+                    self.ready_sound["state"] = "pending"
+                    self.chime_task = asyncio.create_task(self.play_ready_chime(self.session))
+                else:
+                    await self.disarm('screen-locked-or-session-unavailable')
         elif action == "activity" and writer is self.browser:
             if self.phase == "conversation" and msg.get("session") == self.session:
                 now=time.monotonic()
                 from native_host import clean_voice_events
                 self.voice_events=clean_voice_events(msg.get('voice_events'))
+                playback=self.voice_events.get('playback_state')
+                self.remote_audio_updated=now
+                if playback=='busy':self.last_remote_audio=now
                 state=msg.get('ui_state')
                 # An older adapter's absence of a busy flag is not proof of idle.
                 if state not in {'idle','busy','unknown'}:
                     state='busy' if msg.get('busy') is True else 'unknown'
+                if state=='idle' and playback!='quiet':state='unknown'
+                if playback=='busy':state='busy'
                 self.reply_guard.update(state,now)
                 if state=='busy':self.last_activity=now
+        elif action == 'stop-vetoed' and writer is self.browser:
+            if self.enabled and self.phase=='closing' and msg.get('session')==self.session:
+                self.phase='conversation'
+                self.reply_guard.reset()
+                self.last_activity=time.monotonic()
+                if self.last_voice_stop:self.last_voice_stop['vetoed']=True
+                self.publish('CONVERSATION','close-vetoed-activity-unverified',self.mic)
         elif action == "resume" and writer is self.browser:
             if self.enabled and self.phase in {"conversation", "closing"} and msg.get("session") == self.session:
+                if self.chime_task and not self.chime_task.done():
+                    self.chime_task.cancel()
+                self.wake_id = None
                 self.phase, self.session = "wake", None
                 self.phase_since = time.monotonic()
                 self.browser_state = "IDLE"
@@ -276,11 +401,15 @@ class Listener:
             # A fresh wake met a busy composer. Keep the same local capture;
             # do not queue/retry opening Voice or turn off either model.
             if self.enabled and self.phase == 'opening':
+                self.wake_id = None
                 self.recognition_epoch += 1
                 self.phase,self.session = 'wake',None
                 self.phase_since = time.monotonic()
                 self.browser_state = 'WAITING'
                 self.publish('LISTENING','chrome-busy-local-still-listening',self.mic)
+        elif action == 'detach' and writer is self.browser:
+            if self.enabled:
+                self.return_to_wake('browser-disconnected-local-still-listening')
         elif action == "status":
             self.send(writer, self.snapshot())
         else:
@@ -289,11 +418,17 @@ class Listener:
     def request_voice_stop(self, writer, reason):
         if self.phase != "conversation" or not self.session:
             return
+        now = time.monotonic()
+        self.last_voice_stop = {"reason": reason, "at": int(time.time()),
+                                "reply_state": self.reply_guard.state_at(now),
+                                "idle_remaining": self.reply_guard.remaining(now, self.last_activity, self.silence_seconds),
+                                "voice_events": self.voice_events}
+        print(json.dumps({"event": "voice-stop-request", **self.last_voice_stop}), flush=True)
         self.phase = "closing"
-        self.phase_since = time.monotonic()
+        self.phase_since = now
         self.publish("CLOSING", reason, self.mic)
-        self.send(writer, {"type": "stop", "id": secrets.token_hex(16),
-                           "session": self.session, "reason": reason, "at": int(time.time())})
+        self.send(self.browser or writer, {"type": "stop", "id": secrets.token_hex(16),
+                           "session": self.session, "reason": reason, "idle_seconds": self.silence_seconds, "at": int(time.time())})
 
     def check_inactivity(self, writer, now):
         if self.phase == "conversation" and self.reply_guard.expired(now,self.last_activity,self.silence_seconds):
@@ -389,14 +524,24 @@ class Listener:
                 return
             if not self.result_is_current(context, started):
                 return
+            if kind == 'conversation':
+                now=time.monotonic()
+                # An isolated keyword heard in ChatGPT's own playback must not
+                # hang up the call. Accept speech stops only from a verified
+                # quiet interval which did not overlap the captured utterance.
+                began=started-len(utterance.pcm)/32000-.75
+                quiet=(self.voice_events.get('playback_state')=='quiet' and
+                       self.remote_audio_updated is not None and 0<=now-self.remote_audio_updated<2.5)
+                overlap=self.last_remote_audio is not None and self.last_remote_audio>=began
+                if not quiet or overlap:
+                    self.stop_echo_suppressed += 1
+                    print(json.dumps({'event':'stop-keyword-suppressed','reason':'remote-audio-active-or-unverified'}),flush=True)
+                    return
             stats["matches"] += 1
             self.last_recognizer = engine
             if kind == "wake" and time.monotonic() - self.last_wake >= 1:
                 self.wake_matches += 1
-                self.phase = "opening"
-                self.phase_since = self.last_wake = time.monotonic()
-                self.publish("OPENING", "opening-chrome-voice-local-still-listening", True)
-                self.send(writer, {"type": "wake", "id": secrets.token_hex(16), "at": int(time.time())})
+                await self.begin_wake(writer)
             elif kind == "conversation":
                 self.request_voice_stop(writer, "spoken-stop-command")
         except asyncio.CancelledError:
@@ -468,7 +613,9 @@ class Listener:
                 if self.phase == "conversation" and voiced:
                     self.last_activity = now
                 if self.phase in {"opening", "closing"}:
-                    if now - self.phase_since > 20:
+                    if self.phase == "opening" and now - self.phase_since > 90:
+                        self.return_to_wake("browser-transition-timeout")
+                    elif self.phase == "closing" and now - self.phase_since > 20:
                         raise RuntimeError("browser-transition-timeout")
                     continue
                 if utterance and not utterance.too_long:
@@ -528,11 +675,8 @@ class Listener:
             pass
         finally:
             async with self.control:
-                if self.owner is writer or self.browser is writer:
-                    if self.browser is writer:
-                        self.browser = None
-                        self.browser_state = "IDLE"
-                    await self.disarm("browser-disconnected")
+                if self.browser is writer:
+                    self.browser_disconnected()
             self.clients.discard(writer)
             writer.close()
             with contextlib.suppress(ConnectionError):
@@ -553,10 +697,11 @@ async def main(args):
     listener.publish("DISARMED", "service-ready-microphone-closed")
     server = await asyncio.start_unix_server(listener.handle, path=str(path), limit=MAX_FRAME)
     path.chmod(0o600)
-    # Warm up the requested GPU model without opening the microphone. Arming
-    # remains exclusively a user action through the registered browser.
+    # Warm the GPU and start local wake listening independently of Chrome.
     if args.engine_mode in {"both", "wav2vec2"}:
         listener.wav2vec_loading = asyncio.create_task(listener.prepare_wav2vec())
+    if args.auto_listen:
+        await listener.arm()
     stop = asyncio.Event()
     for sig in (signal.SIGINT, signal.SIGTERM):
         asyncio.get_running_loop().add_signal_handler(sig, stop.set)
@@ -580,6 +725,7 @@ async def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument("--auto-listen", action="store_true", help="Listen locally on service startup, without Chrome")
     parser.add_argument("--model", type=Path, default=BASE / "models/vosk-model-small-vn-0.4")
     parser.add_argument("--source", help="PulseAudio/PipeWire source name; default source otherwise")
     parser.add_argument("--max-seconds", type=int, default=0, help="0: listen until disabled or locked")

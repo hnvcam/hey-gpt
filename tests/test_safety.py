@@ -80,15 +80,12 @@ class Lifecycle(unittest.IsolatedAsyncioTestCase):
             await self.listener.dispatch({"cmd":"arm"},writer)
             arm.assert_awaited_once_with(writer)
 
-    async def test_tray_enable_only_requests_browser_not_microphone(self):
+    async def test_tray_enable_starts_local_listener_without_requiring_chrome(self):
         from unittest.mock import Mock
-        browser=Mock();observer=Mock()
-        browser.is_closing.return_value=False
-        self.listener.browser=browser
-        await self.listener.dispatch({"cmd":"enable"},observer)
-        self.assertIsNone(self.listener.task)
-        self.assertFalse(self.listener.mic)
-        self.assertIn(b'"action":"enable"',browser.write.call_args[0][0])
+        with patch.object(self.listener, 'arm', AsyncMock()) as arm:
+            await self.listener.dispatch({'cmd': 'enable'}, Mock())
+            arm.assert_awaited_once_with()
+        self.assertIsNone(self.listener.browser)
 
     async def test_disable_stops_local_and_requests_voice_end(self):
         from unittest.mock import Mock

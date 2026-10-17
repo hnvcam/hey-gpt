@@ -59,9 +59,9 @@
       const remote=event.payload?.new_state;
       if(remote==='listening') {
         // Server readiness does not prove that Chrome finished buffered speech.
-        peer.known=false;peer.busy=false;peer.userSpeaking=false;peer.error=false;
+        peer.listening=true;peer.known=false;peer.busy=false;peer.userSpeaking=false;peer.error=false;
       } else if(['thinking','speaking','listening_intently'].includes(remote)) {
-        peer.known=true;peer.busy=true;peer.turnSeen=true;
+        peer.listening=false;peer.known=true;peer.busy=true;peer.turnSeen=true;
       } else {peer.known=false;peer.busy=false;}
     }
     if(type==='tool_update'&&event.payload?.update_type==='hangup') {
@@ -72,10 +72,10 @@
     const state = event.state, actor = event.actor;
     if (actor === 'CHATGPT_VOICE_ACTOR_ASSISTANT') {
       if (state === 'CHATGPT_VOICE_ACTOR_STATE_LISTENING') {
-        peer.known = false; peer.busy = peer.userSpeaking;
+        peer.listening = true; peer.known = false; peer.busy = peer.userSpeaking;
         peer.awaiting = false; peer.error = false;
       } else if (['CHATGPT_VOICE_ACTOR_STATE_THINKING', 'CHATGPT_VOICE_ACTOR_STATE_SPEAKING'].includes(state)) {
-        peer.known = true; peer.busy = true;
+        peer.listening = false; peer.known = true; peer.busy = true;
       }
     }
     if (actor === 'CHATGPT_VOICE_ACTOR_USER') {
@@ -114,6 +114,22 @@
     channel.addEventListener('message', event => shared.receive(peer, event.data));
     channel.addEventListener('error', () => { peer.error = true; peer.known = false; });
   }
+  async function samplePlayback(peer) {
+    if(peer.sampling)return peer.sampling;
+    if(typeof peer.connection.getStats!=='function'||
+       typeof globalThis.heyGPTPlaybackTracker!=='function')return;
+    peer.playback ||= new globalThis.heyGPTPlaybackTracker();
+    const sampling=(async()=>{try {
+      const report=await peer.connection.getStats();
+      const audio=[];
+      for(const row of report.values())if(row.type==='inbound-rtp'&&
+        (row.kind==='audio'||row.mediaType==='audio'))audio.push(row);
+      peer.playback.update(audio.length===1?audio[0]:null,Date.now());
+    } catch {peer.playback.reset();}
+    })();
+    peer.sampling=sampling;
+    try{await sampling;}finally{if(peer.sampling===sampling)peer.sampling=null;}
+  }
   function observePeer(connection) {
     let peer=[...peers].find(p=>p.connection===connection);
     if(peer)return peer;
@@ -128,7 +144,31 @@
     while(peers.size>8)peers.delete(peers.values().next().value);
     return peer;
   }
-  for(const peer of peers)peer.known=false;
+  shared.queryPlayback = async event => {
+    if (event.source !== window || event.origin !== location.origin ||
+        event.data?.kind !== 'hey-gpt-query-voice-events' ||
+        typeof event.data.nonce !== 'string' || event.data.nonce.length > 80) return;
+    const active = [...peers].filter(p => !['closed','failed','disconnected'].includes(p.connection.connectionState) &&
+      [...p.channels].some(channel => channel.readyState === 'open'));
+    const peer = active.length === 1 ? active[0] : null;
+    if(peer)await samplePlayback(peer);
+    const playback=peer&&!peer.error?peer.playback?.snapshot(Date.now()):null;
+    const microphone_ready = Boolean(peer && !peer.error && peer.listening === true && !peer.busy &&
+      peer.connection.connectionState === 'connected' &&
+      typeof peer.connection.getSenders === 'function' && peer.connection.getSenders().some(sender =>
+        sender.track?.kind === 'audio' && sender.track.readyState === 'live' &&
+        sender.track.enabled === true && sender.track.muted === false));
+    const ui_state = !peer || peer.error ? 'unknown' : peer.busy ? 'busy' : peer.known ? 'idle' : 'unknown';
+    window.postMessage({kind:'hey-gpt-voice-events',observer_version:2, nonce:event.data.nonce, at:Date.now(),
+      ui_state, microphone_ready, playback_state:playback?.state||'unknown',
+      playback_quiet_ms:playback?.quiet_ms||0, connected:Boolean(peer&&!peer.error), supported:Boolean(peer?.known),
+      event_count:peer?.count || 0, event_age_ms:peer?.lastEvent ? Math.max(0,Date.now()-peer.lastEvent) : null,
+      event_types:peer?.kinds || ['active_peers.'+active.length,'total_peers.'+peers.size]}, location.origin);
+  };
+  if(!shared.queryListenerV2){
+    shared.queryListenerV2=event=>shared.queryPlayback(event);
+    window.addEventListener('message',shared.queryListenerV2);
+  }
   shared.receive=receive;
   if(shared.hooked)return;
   shared.hooked=true;
@@ -160,17 +200,4 @@
       }
     });
   }
-  window.addEventListener('message', event => {
-    if (event.source !== window || event.origin !== location.origin ||
-        event.data?.kind !== 'hey-gpt-query-voice-events' ||
-        typeof event.data.nonce !== 'string' || event.data.nonce.length > 80) return;
-    const active = [...peers].filter(p => !['closed','failed','disconnected'].includes(p.connection.connectionState) &&
-      [...p.channels].some(channel => channel.readyState === 'open'));
-    const peer = active.length === 1 ? active[0] : null;
-    const ui_state = !peer || peer.error ? 'unknown' : peer.busy ? 'busy' : peer.known ? 'idle' : 'unknown';
-    window.postMessage({kind:'hey-gpt-voice-events', nonce:event.data.nonce, at:Date.now(),
-      ui_state, connected:Boolean(peer&&!peer.error), supported:Boolean(peer?.known),
-      event_count:peer?.count || 0, event_age_ms:peer?.lastEvent ? Math.max(0,Date.now()-peer.lastEvent) : null,
-      event_types:peer?.kinds || ['active_peers.'+active.length,'total_peers.'+peers.size]}, location.origin);
-  });
 })();

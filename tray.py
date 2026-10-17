@@ -34,17 +34,16 @@ def exchange(cmd):
 
 def display(status):
     if not status:return 'error','Dịch vụ chưa chạy'
-    if not status.get('browser_connected'):return 'off','Chưa kết nối tiện ích Chrome'
     state=status.get('browser_state')
     if status.get('state')=='CLOSING':return 'waiting','Đang kết thúc Voice · sẽ tự chờ “Hey GPT”'
     if status.get('state')=='OPENING':return 'waiting','Đang mở Voice · local vẫn nghe'
     if state=='VOICE' and status.get('enabled'):
         remain=status.get('idle_remaining')
         if status.get('reply_ui_state')=='idle' and remain is not None:return 'voice',f'ChatGPT đã idle · còn {int(remain)+1} giây · local vẫn nghe'
-        return 'voice','Chờ ChatGPT xử lý/trả lời xong · chưa đếm 15 giây'
+        return 'voice','Chờ ChatGPT và âm thanh Voice hoàn tất · chưa đếm 15 giây'
     if state=='DICTATION':return 'voice','ChatGPT đang nhập giọng nói'
     if state=='WAITING' and status.get('enabled'):return 'waiting','Chrome đang bận · micro local vẫn nghe “Hey GPT”'
-    if status.get('local_mic_open'):return 'listening','Đang chờ “Hey GPT” · micro local bật'
+    if status.get('local_mic_open'):return 'listening','Đang chờ “Hey GPT” · micro local bật' + ('' if status.get('browser_connected') else ' · Chrome sẽ mở khi gọi')
     if state=='NEEDS_ACTION':
         code=status.get('browser_detail') or (status.get('last_error') or {}).get('code')
         labels={'voice-ended-unexpectedly':'Voice bị ngắt; cần kiểm tra Chrome',
@@ -107,11 +106,6 @@ class App:
         self.item(menu,'Ẩn biểu tượng (không tắt trợ lý)',lambda *_:Gtk.main_quit())
         menu.show_all();self.indicator.set_menu(menu)
         GLib.timeout_add_seconds(1,self.poll);self.poll()
-        def setup_if_needed():
-            if not self.status or not self.status.get('browser_connected'):
-                self.show_window(setup=True)
-            return False
-        GLib.timeout_add_seconds(3,setup_if_needed)
 
     def item(self,menu,label,handler):
         item=Gtk.MenuItem(label=label);item.connect('activate',handler);menu.append(item);return item
@@ -142,12 +136,12 @@ class App:
         self.indicator.set_icon_full(str(ROOT/f'icons/{color}.svg'),text)
         self.indicator.set_label('GPT','GPT')
         self.header.set_label(text)
-        self.on.set_sensitive(bool(status and status.get('browser_connected')))
+        self.on.set_sensitive(bool(status))
         self.off.set_sensitive(bool(status))
         if self.window:
             self.status_label.set_text(text)
             self.engines_label.set_text(recognizer_text(status))
-            self.on_button.set_sensitive(bool(status and status.get('browser_connected')))
+            self.on_button.set_sensitive(bool(status))
         return False
 
     def show_window(self,setup=False):
@@ -167,7 +161,8 @@ class App:
                    'Nghỉ khoảng 1 giây rồi nói riêng “hết”, “kết thúc”, “dừng lại” hoặc “done”; '
                    'hoặc im lặng 15 giây: tự đóng Voice và chờ “Hey GPT” tiếp. Không cần tìm Chrome bấm kết thúc.\n\n'
                    'Lần đầu: mở chrome://extensions → Developer mode → Load unpacked, chọn thư mục bên dưới. '
-                   'Sau đó mở một tab ChatGPT và bấm BẬT. Nhiều tab: chọn tab bằng popup tiện ích.')
+                   'Đăng nhập và cấp quyền micro một lần. Sau đó chỉ cần nói “Hey GPT”, '
+                   'đợi âm báo hai nốt rồi đặt câu hỏi; Chrome sẽ tự mở khi cần.')
         note=Gtk.Label(label=help_text);note.set_xalign(0);note.set_line_wrap(True);box.pack_start(note,False,False,0)
         folder=Gtk.Entry();folder.set_text(str(ROOT/'extension'));folder.set_editable(False);box.pack_start(folder,False,False,0)
         warning=Gtk.Label(label='TẮT chỉ yêu cầu kết thúc Voice ở tab đã gắn. Nếu mất kết nối, hãy kiểm tra micro trong Chrome.');warning.set_line_wrap(True);warning.set_xalign(0);box.pack_start(warning,False,False,0)

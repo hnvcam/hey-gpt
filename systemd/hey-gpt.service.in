@@ -5,7 +5,7 @@ After=graphical-session.target pipewire-pulse.service
 
 [Service]
 Type=simple
-ExecStart=@PYTHON@ @APP@/daemon.py --engine-mode wav2vec2 --source mic_noise_suppressed
+ExecStart=@PYTHON@ @APP@/daemon.py --auto-listen --engine-mode wav2vec2 --source mic_noise_suppressed
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=8

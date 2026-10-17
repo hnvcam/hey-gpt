@@ -24,7 +24,7 @@ class NativeProtocol(unittest.IsolatedAsyncioTestCase):
         await self.forward({'cmd':'session','session':'existing-session','existing':True})
         self.assertEqual(self.listener.phase,'conversation')
         with patch('daemon.time.monotonic',return_value=100):
-            await self.forward({'cmd':'activity','session':'existing-session','ui_state':'idle'})
+            await self.forward({'cmd':'activity','session':'existing-session','ui_state':'idle','voice_events':{'playback_state':'quiet'}})
         self.assertEqual(self.listener.reply_guard.state_at(100),'idle')
         with patch('daemon.time.monotonic',return_value=101):
             await self.forward({'cmd':'activity','session':'existing-session','ui_state':'busy'})

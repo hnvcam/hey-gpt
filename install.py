@@ -17,6 +17,16 @@ if not python.exists():
     raise SystemExit("Tạo .venv và cài requirements.txt trước; xem README.md.")
 subprocess.run([str(python), "-c", "import torch, transformers"], check=True)
 identity = json.loads((ROOT/"identity.json").read_text())
+# Read only the last-used profile name, never browser credentials or cookies.
+browser_config = ROOT / 'browser.local.json'
+if not browser_config.exists():
+    try:
+        local_state = json.loads((args.config_dir / 'google-chrome/Local State').read_text())
+        profile = local_state.get('profile', {}).get('last_used', 'Default')
+    except (OSError, ValueError):
+        profile = 'Default'
+    browser_config.write_text(json.dumps({'profile': profile}) + '\n')
+    browser_config.chmod(0o600)
 host = ROOT / "native-host.sh"
 host.write_text("#!/bin/sh\nexec /usr/bin/python3 " + shlex.quote(str(ROOT/"native_host.py")) + ' "$@"\n')
 host.chmod(0o700)
@@ -47,4 +57,4 @@ print("Đã ghi biểu tượng và bảng điều khiển:",tray_service)
 print("Đã đăng ký cầu nối Chrome:",manifest)
 print("Thư mục Load unpacked:",ROOT/"extension")
 print("Extension ID:",identity["extension_id"])
-print("Micro local mặc định tắt; bật bằng menu GPT hoặc tiện ích Chrome.")
+print("Micro local tự nghe khi đăng nhập; nói Hey GPT, đợi âm báo rồi đặt câu hỏi.")

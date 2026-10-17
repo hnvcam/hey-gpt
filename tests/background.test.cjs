@@ -15,7 +15,7 @@ function fixture(closed=true){
    tabs:{reload:async id=>reloads.push(id),query:async()=>[{id:1,url:'https://chatgpt.com/'}],get:async()=>({url:'https://chatgpt.com/',windowId:2}),update:async()=>{},onRemoved:event,onUpdated:{addListener:fn=>{navigation=fn;}}},
    windows:{update:async()=>{}},idle:{queryState:async()=>'active',onStateChanged:event}},
   recordRequest:async(cmd,extra)=>requests.push({cmd,extra}),
-  recordPage:async(id,action)=>{pages.push(action);return action==='start'?{state:'BROWSER_VOICE'}:['inspect','ready'].includes(action)?{state:'READY'}:{state:'STOPPED',closed};}};
+  recordPage:async(id,action)=>{pages.push(action);return action==='voice-ready'?{state:'VOICE_READY'}:action==='start'?{state:'BROWSER_VOICE'}:['inspect','ready'].includes(action)?{state:'READY'}:{state:'STOPPED',closed};}};
  vm.createContext(context);vm.runInContext(source.replace(/connect\(\)\.then\(\(\)=>request\('register',[^\n]+/, 'badge();'),context);
  vm.runInContext("request=recordRequest;page=recordPage;port={};enabled=true;armed=true;bound={tabId:1,mode:'voice'};sessionToken='session-token';local={local_mic_open:true};",context);
  return {context,requests,pages,reloads,advance:async ms=>{clock+=ms;const due=[...timers.entries()].filter(([,t])=>t.due<=clock);for(const [id,t] of due){timers.delete(id);await t.fn();}},navigate:async(change)=>{await navigation(1,change);await new Promise(resolve=>setImmediate(resolve));},run:s=>vm.runInContext(s,context)};
@@ -46,10 +46,12 @@ test('ChatGPT same-origin loading during Voice does not disable the assistant',a
  assert.equal(f.run('enabled'),true);
  assert.equal(f.requests.some(x=>x.cmd==='disarm'),false);
 });
-test('leaving ChatGPT still disables the local listener',async()=>{
+test('leaving ChatGPT detaches the tab and preserves the local listener',async()=>{
  const f=fixture();await f.navigate({url:'https://example.com/'});
- assert.equal(f.run('enabled'),false);
- assert.equal(f.requests.some(x=>x.cmd==='disarm'),true);
+ assert.equal(f.run('enabled'),true);
+ assert.equal(f.run('bound'),null);
+ assert.equal(f.requests.some(x=>x.cmd==='detach'),true);
+ assert.equal(f.requests.some(x=>x.cmd==='disarm'),false);
 });
 test('automatic failure preserves its real reason in local status',async()=>{
  const f=fixture();await f.run("fail('voice-end-unconfirmed')");
@@ -60,10 +62,10 @@ test('automatic failure preserves its real reason in local status',async()=>{
 });
 test('explicitly enabling while Voice is open attaches without another Voice start',async()=>{
  const f=fixture();
- f.run("connect=async()=>{};enabled=false;page=async(id,action)=>action==='inspect'?{state:'BLOCKED',detail:'browser-already-recording'}:action==='attach'?{state:'BROWSER_VOICE'}:{state:'STOPPED'}");
+ f.run("connect=async()=>{};enabled=false;page=async(id,action)=>action==='inspect'?{state:'BLOCKED',detail:'browser-already-recording'}:action==='attach'?{state:'BROWSER_VOICE'}:action==='voice-ready'?{state:'VOICE_READY'}:{state:'STOPPED'}");
  await f.run('enable(true)');
  assert.equal(f.run('enabled'),true);
- assert.equal(f.requests.filter(x=>x.cmd==='arm').length,1);
+ assert.equal(f.requests.filter(x=>x.cmd==='arm').length,2);
  assert.equal(f.requests.find(x=>x.cmd==='session').extra.existing,true);
 });
 
@@ -175,4 +177,62 @@ test('only current tab/session UI state reaches the idle timer',async()=>{
  const count=f.requests.length;
  f.context.message={token:'old-session',ui_state:'idle'};
  await f.run('voiceActivity(message,sender)');assert.equal(f.requests.length,count);
+});
+
+test('warm wake chimes only after a separate microphone-readiness confirmation',async()=>{
+ const f=fixture();f.context.event={id:crypto.randomUUID(),at:Date.now()/1000};
+ await f.run('handleWake(event)');
+ assert.deepEqual(f.pages,['inspect','start','voice-ready']);
+ const cmds=f.requests.map(x=>x.cmd);
+ assert.ok(cmds.indexOf('voice-ready')>cmds.indexOf('session'));
+ assert.equal(cmds.filter(x=>x==='voice-ready').length,1);
+ await f.run('handleWake(event)');assert.equal(cmds.filter(x=>x==='voice-ready').length,1);
+});
+test('Voice UI without a ready microphone never sends the chime command',async()=>{
+ const f=fixture();f.context.event={id:crypto.randomUUID(),at:Date.now()/1000};
+ f.run("page=async(id,action)=>action==='inspect'?{state:'READY'}:action==='start'?{state:'BROWSER_VOICE'}:{state:'BLOCKED',detail:'voice-not-ready'}");
+ await f.run('handleWake(event)');
+ assert.equal(f.requests.some(x=>x.cmd==='voice-ready'),false);
+ assert.equal(f.run('enabled'),false);
+ assert.equal(f.requests.find(x=>x.cmd==='disarm').extra.reason,'voice-not-ready');
+});
+test('wake creates and binds a ChatGPT tab when none exists',async()=>{
+ const f=fixture();f.context.created=[];f.context.event={id:crypto.randomUUID(),at:Date.now()/1000};
+ f.run("bound=null;chrome.tabs.query=async()=>[];chrome.tabs.create=async options=>{created.push(options);return {id:7,url:options.url}};");
+ await f.run('handleWake(event)');
+ assert.equal(f.context.created.length,1);assert.equal(f.run('bound.tabId'),7);
+ assert.equal(f.requests.filter(x=>x.cmd==='voice-ready').length,1);
+});
+test('wake reuses a deterministically chosen existing tab rather than creating duplicates',async()=>{
+ const f=fixture();f.context.event={id:crypto.randomUUID(),at:Date.now()/1000};
+ f.run("bound=null;chrome.tabs.query=async()=>[{id:3,lastAccessed:200},{id:2,active:true,lastAccessed:100}];chrome.tabs.create=async()=>{throw Error('duplicate tab')}");
+ await f.run('handleWake(event)');assert.equal(f.run('bound.tabId'),2);
+});
+test('disabling while Chrome is preparing cancels the pending start and chime',async()=>{
+ const f=fixture();f.context.event={id:crypto.randomUUID(),at:Date.now()/1000};
+ f.run("waitForPage=async()=>{enabled=false;generation++;return {state:'READY'}}");
+ await f.run('handleWake(event)');
+ assert.equal(f.pages.includes('start'),false);assert.equal(f.requests.some(x=>x.cmd==='voice-ready'),false);
+});
+test('an expired pending wake cannot start Voice after Chrome eventually loads',async()=>{
+ const f=fixture();f.context.event={id:crypto.randomUUID(),at:Date.now()/1000};
+ f.run("local.wake_id=event.id;waitForPage=async()=>{local.wake_id=null;return {state:'READY'}}");
+ await f.run('handleWake(event)');assert.equal(f.pages.includes('start'),false);
+});
+test('enabling without a ChatGPT tab only enables the local mic without opening Chrome',async()=>{
+ const f=fixture();f.run("enabled=false;bound=null;connect=async()=>{};chrome.tabs.query=async()=>[]");
+ await f.run('enable(true)');
+ assert.equal(f.requests.filter(x=>x.cmd==='arm').length,1);
+ assert.equal(f.pages.length,0);assert.equal(f.run('enabled'),true);
+});
+
+test('resumed audio vetoes a pending idle stop and preserves the same Voice session',async()=>{
+ const f=fixture();f.context.event={...event(),reason:'silence-timeout',idle_seconds:15};
+ f.run("page=async(id,action)=>{pagesForVeto.push(action);return {state:'STOP_VETOED'}}");
+ f.context.pagesForVeto=[];
+ await f.run('handleStop(event)');
+ assert.deepEqual(f.context.pagesForVeto,['stop-idle']);
+ assert.equal(f.requests.filter(x=>x.cmd==='stop-vetoed').length,1);
+ assert.equal(f.requests.some(x=>['disarm','resume'].includes(x.cmd)),false);
+ assert.equal(f.run('enabled&&sessionToken===\"session-token\"&&!stopPending'),true);
 });

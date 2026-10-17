@@ -121,6 +121,8 @@ class ParallelRecognition(unittest.IsolatedAsyncioTestCase):
     async def test_stop_requires_whole_utterance_and_pause_on_either_engine(self):
         self.listener.phase = 'conversation'
         self.listener.session = 'session-token'
+        self.listener.voice_events={'playback_state':'quiet'}
+        self.listener.remote_audio_updated=time.monotonic()
         context = self.listener.recognition_context()
         await self.listener.recognize('wav2vec2',lambda _:result('dấu chấm hết'),self.utterance,self.writer,'7',context)
         short = Utterance(self.utterance.pcm,.3,1000,False)

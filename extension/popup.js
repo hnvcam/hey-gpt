@@ -2,6 +2,13 @@ const $=id=>document.getElementById(id);
 $('version').textContent=chrome.runtime.getManifest().version+' · Nghe local liên tục · Không OpenAI API';
 const states={DISARMED:'Đã tắt',LISTENING:'Đang chờ “Hey GPT”',ARMING:'Đang chuẩn bị',OPENING:'Đang mở Voice',CONVERSATION:'Đang nghe lệnh dừng',CLOSING:'Đang đóng Voice',ERROR:'Có lỗi',DISCONNECTED:'Chưa kết nối dịch vụ'};
 const details={
+ 'close-vetoed-activity-unverified':'Chưa xác nhận yên lặng · giữ cuộc gọi mở',
+ 'browser-disconnected-local-still-listening':'Chrome đã đóng · vẫn chờ Hey GPT; Chrome sẽ tự mở khi gọi',
+ 'opening-chrome-voice-local-still-listening':'Đang mở/kết nối Chrome · đợi âm báo hai nốt rồi nói',
+ 'browser-start-failed':'Không mở được Chrome; vẫn nghe local · kiểm tra cài đặt Chrome',
+ 'browser-transition-timeout':'Chrome chưa kết nối kịp; vẫn nghe local · kiểm tra tiện ích hoặc đăng nhập',
+ 'voice-not-ready':'Voice chưa xác nhận micro sẵn sàng; kiểm tra Chrome',
+ 'ready-sound-unavailable':'Không phát được âm báo; kiểm tra âm thanh hệ thống',
  'reloading-chatgpt':'Chrome kẹt quá 15 giây · đang tải lại tab một lần; micro local vẫn nghe',
  'recovery-timeout':'Chrome chưa sẵn sàng sau lượt phục hồi · micro local vẫn nghe',
  'response-generating':'ChatGPT đang trả lời; micro local vẫn nghe',
@@ -39,7 +46,7 @@ async function update(cmd='info'){
   connectionFailed=false;
   $('mic').textContent='Micro local: '+(result.local.local_mic_open?(result.local.listen_mode==='conversation'?'NGHE LỆNH KẾT THÚC':'ĐANG NGHE'):'ĐÃ ĐÓNG');
   $('arm').disabled=Boolean(result.enabled);
-  $('turn').textContent=result.local.listen_mode==='conversation'?(result.local.reply_ui_state==='idle'&&result.local.idle_remaining!==null?'ChatGPT đang chờ · còn '+Math.ceil(result.local.idle_remaining)+' giây':result.local.reply_ui_state==='busy'?'ChatGPT đang xử lý/trả lời · chưa đếm 15 giây':'Chờ trạng thái phiên · chưa đếm 15 giây'):'';
+  $('turn').textContent=result.local.listen_mode==='conversation'?(result.local.reply_ui_state==='idle'&&result.local.idle_remaining!==null?'ChatGPT đang chờ · còn '+Math.ceil(result.local.idle_remaining)+' giây':result.local.reply_ui_state==='busy'?'ChatGPT đang xử lý/phát tiếng · chưa đếm 15 giây':'Chưa xác nhận âm thanh yên lặng · chưa đếm 15 giây'):'';
   const eventInfo=result.local.voice_events;
   $('events').textContent=result.local.listen_mode==='conversation'?(eventInfo?.connected?(eventInfo.supported?'Đã nhận trạng thái phiên trực tiếp':'Đã nối kênh sự kiện · đang xác định trạng thái'):'Chưa nhận được kênh trạng thái · chưa đếm 15 giây'):'';
   const activity=result.local.voice_activity;

@@ -30,3 +30,21 @@ test('postMessage failure rejects the waiting command and removes its timeout',a
  const f=fixture();const connection=f.run('connect()');f.ports[0].onMessage.emit({type:'status',state:'DISARMED'});await connection;
  await assert.rejects(f.run("request('status')"),/disconnected/);assert.equal(f.run('pending.size'),0);
 });
+
+test('external disable clears a stale Voice session so tray re-enable can wake again',async()=>{
+ const f=fixture();const connection=f.run('connect()');
+ f.ports[0].onMessage.emit({type:'status',state:'LISTENING',enabled:true,listen_mode:'wake'});await connection;
+ f.run("sessionToken='old-session';armed=false");
+ f.ports[0].onMessage.emit({type:'status',state:'DISARMED',enabled:false,listen_mode:'wake'});
+ assert.equal(f.run('sessionToken'),null);
+ f.ports[0].onMessage.emit({type:'status',state:'LISTENING',enabled:true,listen_mode:'wake'});
+ assert.equal(f.run('armed&&enabled'),true);
+});
+test('service reconnect backs off within the worker idle window and never starts Voice',async()=>{
+ const f=fixture();const connection=f.run('connect()');
+ f.ports[0].onMessage.emit({type:'status',state:'LISTENING',enabled:true,listen_mode:'wake'});await connection;
+ f.ports[0].onDisconnect.emit();f.advance(1000);
+ assert.equal(f.ports.length,2);assert.equal(f.run('sessionToken'),null);
+ f.run('for(let i=0;i<20;i++){reconnectTimer=null;scheduleReconnect()}');
+ assert.ok(f.run('reconnectDelay')<30000);
+});

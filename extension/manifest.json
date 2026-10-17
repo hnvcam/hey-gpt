@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Hey GPT — Tiếng Việt local",
-  "version": "0.6.1",
+  "version": "0.7.1",
   "description": "Nghe từ khóa tiếng Việt local, mở Voice trên tab ChatGPT bạn chọn. Không dùng OpenAI API.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA05sgcQ2HI1K7u0+iKHJ12YZQsSB20G+U0zTw/pr+Y+4T5VfvWrMEsi7YmPYIhUs7N+nP7hkfQ887DTGsahrSzhq8axOXguP95UVe6tx6bgMm3C1YdwjqH9cUOoKNX/ywJcPekZbjvVVK3xqsHH6hgDZJsz8VXevydsQWNuQI40TeemcrHzXyiXhXpSxMOOlshy04jCaWO+9Wv6X9ct2pHFqcnipQRRecdSbqn4unP8Y8gaH/nEW5sFcaVW1vVY1iW3vrD0rsag+tRmFyVK3RVRendrselYoxJJV2CSMsNaDy8ju3tP99fu9XHXVLc1iUwMaa2jOvVBGtpFpN+Z9/KwIDAQAB",
   "permissions": [
@@ -25,6 +25,7 @@
         "https://chatgpt.com/*"
       ],
       "js": [
+        "playback.js",
         "voice-events.js"
       ],
       "run_at": "document_start",

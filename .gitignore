@@ -45,3 +45,6 @@ backups/
 .idea/
 .vscode/
 .DS_Store
+
+# Bundled application cue (personal recordings remain ignored)
+!sounds/ready.wav

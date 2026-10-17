@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read listener state or close local microphone; cannot remotely arm it."""
+"""Read or control the same-user local wake listener."""
 import argparse
 import json
 import os
@@ -7,7 +7,7 @@ from pathlib import Path
 import socket
 
 parser = argparse.ArgumentParser()
-parser.add_argument("command", choices=("status", "disarm"), default="status", nargs="?")
+parser.add_argument("command", choices=("status", "enable", "disable", "disarm", "wake"), default="status", nargs="?")
 args = parser.parse_args()
 path = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")) / "hey-gpt/control.sock"
 try:
@@ -19,7 +19,7 @@ try:
         if args.command == "status":
             print(json.dumps(initial, ensure_ascii=False, indent=2))
         else:
-            sock.sendall(b'{"cmd":"disarm"}\n')
+            sock.sendall(json.dumps({'cmd': args.command}).encode() + b'\n')
             print(reader.readline().decode().strip())
 except OSError:
     raise SystemExit("Dịch vụ chưa chạy; không có bộ nghe Hey GPT đang hoạt động.")

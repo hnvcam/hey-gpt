@@ -3,7 +3,7 @@ let local={state:'DISARMED',local_mic_open:false,detail:'not-connected'};
 let browserState={state:'IDLE',detail:''};
 const pending=new Map(),seen=new Set();
 const extensionVersion=chrome.runtime.getManifest().version;
-let recovery=null;
+let recovery=null,reconnectTimer=null,reconnectDelay=1000;
 const RECOVERY_WAIT=15000,RECOVERY_POLL=500;
 function cancelRecovery(){
   if(recovery?.timer)clearTimeout(recovery.timer);
@@ -89,20 +89,26 @@ function connect(){
     for(const item of pending.values())item.reject(new Error(detail));
     pending.clear();
     local={state:'DISCONNECTED',local_mic_open:false,detail};
-    badge();
+    badge();scheduleReconnect();
   };
   const timer=setTimeout(()=>{
     drop('native-connect-timeout');
     try{channel?.disconnect();}catch{}
   },5000);
   try{channel=chrome.runtime.connectNative('org.local.hey_gpt');port=channel;}
-  catch{clearTimeout(timer);ready=null;settled=true;rejectReady(new Error('native-host-unavailable'));return waiting;}
+  catch{clearTimeout(timer);ready=null;settled=true;rejectReady(new Error('native-host-unavailable'));scheduleReconnect();return waiting;}
   channel.onMessage.addListener(message=>{
     if(port!==channel)return;
     if(message.type==='status'){
       if(!settled){settled=true;clearTimeout(timer);resolveReady();}
-      local=message;
-      if(['DISARMED','ERROR'].includes(message.state)&&message.enabled===false){armed=false;enabled=false;}
+      local=message;reconnectDelay=1000;
+      if(reconnectTimer){clearTimeout(reconnectTimer);reconnectTimer=null;}
+      const wasEnabled=enabled;enabled=message.enabled===true;
+      if(!enabled){
+        if(wasEnabled||sessionToken){generation++;sessionToken=null;stopPending=false;cancelRecovery();}
+        armed=false;
+      }
+      else if(!sessionToken&&['wake','opening'].includes(message.listen_mode)){armed=true;}
       badge();
     }else if(message.type==='ack'){
       pending.get(message.request)?.resolve();pending.delete(message.request);
@@ -133,10 +139,10 @@ async function request(cmd,extra={}){
   catch{pending.get(id)?.reject(new Error('disconnected'));pending.delete(id);}
   return done;
 }
-async function page(tabId,action,mode='voice',token=''){
-  await chrome.scripting.executeScript({target:{tabId},world:'MAIN',files:['voice-events.js']});
+async function page(tabId,action,mode='voice',token='',options={}){
+  await chrome.scripting.executeScript({target:{tabId},world:'MAIN',files:['playback.js','voice-events.js']});
   await chrome.scripting.executeScript({target:{tabId},files:['page.js']});
-  const results=await chrome.scripting.executeScript({target:{tabId},func:(a,m,t)=>globalThis.heyGPT(a,m,t),args:[action,mode,token]});
+  const results=await chrome.scripting.executeScript({target:{tabId},func:(a,m,t,o)=>globalThis.heyGPT(a,m,t,o),args:[action,mode,token,options]});
   return results[0]?.result||{state:'BLOCKED',detail:'no-page-result'};
 }
 async function report(state){if(port)await request('report',{state,detail:browserState.detail||''});await badge();}
@@ -154,16 +160,41 @@ async function fail(detail){
   browserState={state:'NEEDS_CLICK',detail};
   await report('NEEDS_ACTION').catch(()=>{});
 }
-async function chooseBound(fromPopup,mode){
+async function chooseBound(fromPopup,mode='voice'){
   if(fromPopup){
     const [tab]=await chrome.tabs.query({active:true,currentWindow:true});
-    if(!tab||!valid(tab.url))throw new Error('Mở tab ChatGPT trước khi bật trợ lý.');
-    bound={tabId:tab.id,mode};return;
+    if(tab&&valid(tab.url)){bound={tabId:tab.id,mode};return;}
   }
-  if(bound){try{if(valid((await chrome.tabs.get(bound.tabId)).url))return;}catch{}}
-  const tabs=await chrome.tabs.query({url:'https://chatgpt.com/*'});
-  if(tabs.length!==1)throw new Error('Mở một tab ChatGPT, hoặc chọn tab trong tiện ích Chrome.');
-  bound={tabId:tabs[0].id,mode:'voice'};
+  if(bound){try{const tab=await chrome.tabs.get(bound.tabId);if(valid(tab.url)||valid(tab.pendingUrl))return;}catch{}}
+  let tabs=await chrome.tabs.query({url:'https://chatgpt.com/*'});
+  if(!tabs.length)tabs=(await chrome.tabs.query({})).filter(tab=>valid(tab.url)||valid(tab.pendingUrl));
+  // Prefer an existing active tab, then the most recently used tab. No duplicate
+  // tab is created merely because multiple ChatGPT tabs are open.
+  tabs.sort((a,b)=>Number(Boolean(b.active))-Number(Boolean(a.active)) ||
+    (b.lastAccessed||0)-(a.lastAccessed||0) || a.id-b.id);
+  const tab=tabs[0]||await chrome.tabs.create({url:'https://chatgpt.com/',active:true});
+  bound={tabId:tab.id,mode:'voice'};
+}
+async function waitForPage(tabId,current,deadline){
+  while(current()&&Date.now()<deadline){
+    const tab=await chrome.tabs.get(tabId);
+    if(!valid(tab.url)&&!valid(tab.pendingUrl))throw new Error('target-tab-changed');
+    if(tab.status!=='loading'){
+      let check;
+      try{check=await page(tabId,'inspect');}catch{}
+      if(check&&(!['composer-not-found','voice-button-missing-or-ambiguous'].includes(check.detail))){
+        return check;
+      }
+    }
+    await new Promise(resolve=>setTimeout(resolve,250));
+  }
+  throw new Error(current()?'setup-required':'wake-cancelled');
+}
+async function confirmReady(chosen,token,epoch){
+  const check=await page(chosen.tabId,'voice-ready','voice',token);
+  if(!enabled||generation!==epoch||sessionToken!==token)return;
+  if(check.state!=='VOICE_READY')return fail(check.detail||'voice-not-ready');
+  await request('voice-ready',{session:token});
 }
 async function armExisting(){
   if(!enabled||!bound)return;
@@ -175,43 +206,56 @@ async function armExisting(){
     armed=false;browserState=attached;
     await request('arm');
     await request('session',{session:sessionToken,existing:true});
-    await report('VOICE');return;
+    await report('VOICE');await confirmReady({...bound},sessionToken,generation);return;
   }
   if(!['READY','WAITING'].includes(check.state))return fail(check.detail);
   armed=true;browserState=check.state==='WAITING'?check:{state:'IDLE',detail:''};
   await request('arm');await report(check.state==='WAITING'?'WAITING':'IDLE');
 }
 async function enable(fromPopup,mode='voice'){
-  if(enabled&&bound){
-    if(!fromPopup)return;
-    const [active]=await chrome.tabs.query({active:true,currentWindow:true});
-    if(active?.id===bound.tabId&&mode===bound.mode)return;
-  }
-  await disable(false);
   await connect();await request('register',{extension_version:extensionVersion});
-  await chooseBound(fromPopup,mode);
-  enabled=true;generation++;await armExisting();
+  if(enabled)return;
+  // Enabling the local mic must not require or open a website.
+  if(fromPopup){
+    const [tab]=await chrome.tabs.query({active:true,currentWindow:true});
+    if(tab&&valid(tab.url))bound={tabId:tab.id,mode};
+  }
+  enabled=true;generation++;
+  await request('arm');
+  if(bound)await armExisting();
 }
 async function handleWake(message){
-  if(!armed||!enabled||!bound||seen.has(message.id)||Math.abs(Date.now()/1000-message.at)>5)return;
+  if(!armed||!enabled||seen.has(message.id)||Math.abs(Date.now()/1000-message.at)>5)return;
   seen.add(message.id);if(seen.size>50)seen.delete(seen.values().next().value);
-  armed=false;const chosen={...bound},token=generation;
-  const tab=await chrome.tabs.get(chosen.tabId);
-  if(!valid(tab.url))return fail('target-tab-changed');
-  if(await chrome.idle.queryState(60)==='locked')return disable(false);
-  await chrome.tabs.update(chosen.tabId,{active:true});await chrome.windows.update(tab.windowId,{focused:true});
-  if(generation!==token||!enabled)return;
-  sessionToken=crypto.randomUUID();
-  browserState=await page(chosen.tabId,'start',chosen.mode,sessionToken);
-  if(generation!==token||!enabled){await page(chosen.tabId,'stop').catch(()=>{});return;}
-  if(browserState.state==='BROWSER_VOICE'){cancelRecovery();await request('session',{session:sessionToken});await report('VOICE');}
-  else if(browserState.state==='BROWSER_DICTATION'){
-    // Dictation leaves editable text; do not auto-submit it or rearm over a draft.
-    enabled=false;await request('disarm');await report('DICTATION');
-  }else if(browserState.state==='WAITING'){
-    await request('defer');if(generation!==token||!enabled)return;
-    sessionToken=null;armed=true;await report('WAITING');
-  }else await fail(browserState.detail);
+  cancelRecovery();armed=false;const epoch=generation;
+  const current=()=>generation===epoch&&enabled&&(!('wake_id' in local)||local.wake_id===message.id);
+  try{
+    if(await chrome.idle.queryState(60)==='locked')return disable(false);
+    await chooseBound(false);
+    if(!current())return;
+    const chosen={...bound};
+    const tab=await chrome.tabs.get(chosen.tabId);
+    if(!valid(tab.url)&&!valid(tab.pendingUrl))return fail('target-tab-changed');
+    await chrome.tabs.update(chosen.tabId,{active:true});await chrome.windows.update(tab.windowId,{focused:true});
+    const deadline=Math.min((message.expires||Date.now()/1000+90)*1000,Date.now()+60000);
+    const preflight=await waitForPage(chosen.tabId,current,deadline);
+    if(!current())return;
+    sessionToken=crypto.randomUUID();
+    // Start is invoked once, after the page is usable. No automatic Voice retry.
+    browserState=preflight.state==='WAITING'?preflight:await page(chosen.tabId,'start',chosen.mode,sessionToken);
+    if(!current()){await page(chosen.tabId,'stop').catch(()=>{});return;}
+    if(browserState.state==='BROWSER_VOICE'){
+      await request('session',{session:sessionToken,wake_id:message.id});await report('VOICE');
+      await confirmReady(chosen,sessionToken,epoch);
+    }else if(browserState.state==='BROWSER_DICTATION'){
+      enabled=false;await request('disarm');await report('DICTATION');
+    }else if(browserState.state==='WAITING'){
+      await request('defer');if(!current())return;
+      sessionToken=null;armed=true;await report('WAITING');
+    }else await fail(browserState.detail);
+  }catch(error){
+    if(current())await fail(['setup-required','target-tab-changed'].includes(error.message)?error.message:'browser-operation-failed');
+  }
 }
 async function resumeAfterEnd(token){
   if(!enabled||!bound||token!==sessionToken)return;
@@ -231,8 +275,14 @@ async function handleStop(message){
   if(!enabled||!bound||!sessionToken||stopPending||message.session!==sessionToken||seen.has(message.id)||Math.abs(Date.now()/1000-message.at)>5)return;
   seen.add(message.id);if(seen.size>50)seen.delete(seen.values().next().value);
   const token=sessionToken,epoch=generation;stopPending=true;
-  browserState=await page(bound.tabId,'stop','voice',token);
+  const action=message.reason==='silence-timeout'?'stop-idle':message.reason==='spoken-stop-command'?'stop-command':'stop';
+  browserState=await page(bound.tabId,action,'voice',token,{idleSeconds:message.idle_seconds||15});
   if(epoch!==generation||!enabled)return;
+  if(browserState.state==='STOP_VETOED'){
+    stopPending=false;await request('stop-vetoed',{session:token});
+    browserState={state:'BROWSER_VOICE',detail:'close-vetoed-activity-unverified'};
+    await report('VOICE');return;
+  }
   if(browserState.state!=='STOPPED'||browserState.closed!==true)return fail(browserState.detail);
   await resumeAfterEnd(token);
 }
@@ -262,15 +312,26 @@ chrome.runtime.onMessage.addListener((message,sender,reply)=>{
   })().catch(error=>{if(message.cmd!=='info')fail('setup-required').catch(()=>{});reply({ok:false,error:error.message});});
   return true;
 });
-chrome.tabs.onRemoved.addListener(id=>{if(bound?.tabId===id){disable(false).catch(()=>{});bound=null;}});
+async function detachTab(){
+  cancelRecovery();generation++;sessionToken=null;stopPending=false;bound=null;
+  armed=enabled;
+  if(port)await request('detach');
+  browserState={state:'IDLE',detail:'waiting-for-next-wake'};await badge();
+}
+chrome.tabs.onRemoved.addListener(id=>{if(bound?.tabId===id)detachTab().catch(()=>{});});
 chrome.tabs.onUpdated.addListener((id,change)=>{
   if(recovery?.tabId===id&&change.url&&(!recovery.url||change.url!==recovery.url))cancelRecovery();
-  // A manual reload cancels our pending recovery; an owned reload is one-shot.
   if(recovery?.tabId===id&&change.status==='loading'&&!recovery.reloaded)cancelRecovery();
-  // ChatGPT may report loading while it opens Voice. Keep the same-origin tab bound;
-  // a loading event alone is not evidence that the user left ChatGPT.
-  if(bound?.tabId===id&&change.url&&!valid(change.url))disable(false).catch(()=>{});
+  if(bound?.tabId===id&&change.url&&!valid(change.url))detachTab().catch(()=>{});
 });
 chrome.idle.onStateChanged.addListener(state=>{if(state==='locked')disable(false).catch(()=>{});});
-// Connect for tray controls; never enable microphone merely because Chrome starts.
-connect().then(()=>request('register',{extension_version:extensionVersion})).catch(()=>{});badge();
+function scheduleReconnect(){
+  if(reconnectTimer)return;
+  reconnectTimer=setTimeout(()=>{
+    reconnectTimer=null;
+    connect().then(()=>request('register',{extension_version:extensionVersion})).catch(()=>scheduleReconnect());
+  },reconnectDelay);
+  reconnectDelay=Math.min(15000,reconnectDelay*2);
+}
+// Reconnecting the bridge never opens Voice. Only a fresh local wake can do so.
+connect().then(()=>request('register',{extension_version:extensionVersion})).catch(()=>scheduleReconnect());badge();
