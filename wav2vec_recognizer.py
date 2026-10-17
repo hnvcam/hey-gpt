@@ -105,6 +105,7 @@ class Wav2VecVietnamese:
         # Imports are intentionally lazy: Vosk still works if this optional
         # dependency/model has not been installed. Nothing downloads at runtime.
         path = Path(model_path)
+        self.model_path = path
         if not (path / 'config.json').is_file():
             raise FileNotFoundError('wav2vec-model-missing')
         requested = gpu_uuid or os.environ.get('HEY_GPT_CUDA_UUID')
@@ -151,6 +152,22 @@ class Wav2VecVietnamese:
         torch.cuda.synchronize()
         template_path = Path(__file__).resolve().parent / 'data/keyword-templates'
         self.templates = TemplateBank(template_path, path, np) if template_path.exists() else None
+        self.typing_templates = None
+        self.reload_typing_templates()
+
+    def reload_typing_templates(self):
+        folder=Path(__file__).resolve().parent/'data/typing-templates'
+        bank=TemplateBank(folder,self.model_path,self.np) if folder.exists() else None
+        self.typing_templates=bank
+        return len(bank.rows) if bank else 0
+
+    def match_typing(self, pcm, kind):
+        bank=self.typing_templates
+        if bank is None:return False
+        trimmed=trim_pcm(pcm,self.np)
+        if not 8000<=len(trimmed)<=80000:return False
+        features=self.acoustic_features(trimmed)
+        return bool(bank.match(features,kind,len(trimmed)/32000))
 
     def acoustic_features(self, pcm):
         """Same CUDA model, fixed middle layer; no text conversion needed."""

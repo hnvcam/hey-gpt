@@ -72,7 +72,7 @@ class TemplateBank:
                         or not np.isfinite(data).all()):
                     raise ValueError('invalid-acoustic-feature-shape')
                 self.rows.append((row['kind'], row['label'], data.copy()))
-        self.thresholds = {'wake': .45, 'stop': .30}
+        self.thresholds = {'wake': .45, 'stop': .30, 'typing': .45, 'typing-stop': .30}
         self.minimum_margin = .08
 
     def match(self, features, kind, seconds):

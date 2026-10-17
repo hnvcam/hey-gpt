@@ -45,6 +45,30 @@ def reading_plan():
             for n, (kind, text, hint, split, seconds) in enumerate(rows, 1)]
 
 
+def typing_plan():
+    rows=[('noise','','Keep the usual room noise; do not speak.','dev',8)]
+    phrases=[('typing','typing this'),('typing','type this'),('typing-stop','stop typing'),
+             ('typing-stop','end typing'),('typing-stop','typing end')]
+    for take in range(5):
+        for kind,text in phrases:
+            rows.append((kind,text,'Say it once in your everyday voice, then stay quiet.',
+                         'dev' if take<3 else 'test',6))
+    for index,text in enumerate(('I am typing this sentence.', 'Please type this address for me.',
+                                 "Do not stop typing yet.", 'We can end typing after lunch.',
+                                 'The phrase typing end is unusual.', 'Hey GPT')):
+        rows.append(('negative',text,'Read the whole sentence naturally, without a separate command.',
+                     'dev' if index<3 else 'test',6))
+    rows.append(('noise','','Stay quiet; type on your keyboard briefly if you like.','test',8))
+    return [dict(id=f'{i:02d}',kind=kind,text=text,hint=hint,split=split,seconds=seconds)
+            for i,(kind,text,hint,split,seconds) in enumerate(rows,1)]
+
+
+def control(command):
+    result=subprocess.run(['/usr/bin/python3','-B',str(ROOT/'hey_gpt_ctl.py'),command],
+                          stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=15)
+    if result.returncode:raise RuntimeError('Could not update the Hey GPT background listener.')
+
+
 def private_json(path, value):
     tmp = path.with_suffix(path.suffix + '.tmp')
     with open(tmp, 'w', encoding='utf-8') as handle:
@@ -96,9 +120,11 @@ def capture(source, seconds, stop, update):
 
 
 class Studio:
-    def __init__(self, root, sources):
+    def __init__(self, root, sources, profile='voice'):
         self.root, self.sources = root, sources
-        self.plan = reading_plan()
+        self.profile=profile
+        self.paused=False
+        self.plan = typing_plan() if profile=='typing' else reading_plan()
         self.lock = threading.RLock()
         self.stop = threading.Event()
         self.session = None
@@ -106,9 +132,20 @@ class Studio:
         self.state = dict(phase='idle', message='Chưa mở micro.', current=None, elapsed=0,
                           completed=[], report=None, session=None)
 
+    def resume(self, session):
+        session=session.resolve()
+        if session.parent!=(self.root/'recordings').resolve():raise ValueError('Invalid recording session.')
+        manifest=json.loads((session/'manifest.json').read_text())
+        if manifest.get('profile','voice')!=self.profile:raise ValueError('Recording profile mismatch.')
+        self.session,self.manifest=session,manifest
+        self.plan=manifest['plan'];self.paused=self.profile=='typing'
+        report=session/'typing-report.json'
+        self.set(phase='done',session=str(session),completed=sorted({c['prompt'] for c in manifest['clips']}),
+                 report=json.loads(report.read_text()) if report.exists() else None,message='Your saved recordings are ready.')
+
     def snapshot(self):
         with self.lock:
-            return dict(self.state, plan=self.plan, sources=self.sources)
+            return dict(self.state, plan=self.plan, sources=self.sources, profile=self.profile)
 
     def set(self, **values):
         with self.lock:
@@ -126,13 +163,15 @@ class Studio:
             ids = [row['id'] for row in self.plan]
             if selection != 'all' and selection not in ids:
                 raise ValueError('Câu đọc không hợp lệ.')
+            if self.profile=='typing' and not self.paused:
+                control('disable');self.paused=True
             self.check_disarmed()
             if self.session is None:
                 parent = self.root / 'recordings'
                 parent.mkdir(mode=0o700, exist_ok=True)
                 self.session = parent / (datetime.now().strftime('%Y%m%d-%H%M%S') + '-' + secrets.token_hex(3))
                 self.session.mkdir(mode=0o700)
-                self.manifest = dict(schema=1, created=datetime.now().astimezone().isoformat(),
+                self.manifest = dict(schema=1, profile=self.profile, created=datetime.now().astimezone().isoformat(),
                                      rate=RATE, sources=self.sources, plan=self.plan, clips=[],
                                      note='Local consented keyword recordings; no ChatGPT connection.')
                 self.set(session=str(self.session))
@@ -190,6 +229,7 @@ class Studio:
             threading.Thread(target=self.run_evaluation, daemon=True).start()
 
     def run_evaluation(self):
+        if self.profile=='typing':return self.run_typing_training()
         try:
             command = [str(self.root / '.venv/bin/python'), '-B', str(Path(__file__).resolve()),
                        'evaluate', str(self.session)]
@@ -200,6 +240,21 @@ class Studio:
             self.set(phase='done', message='Đã kiểm tra và lưu report.json; không điều khiển Chrome.', report=report)
         except Exception as exc:
             self.set(phase='error', message=str(exc))
+
+    def run_typing_training(self):
+        try:
+            self.check_disarmed()
+            result=subprocess.run([str(self.root/'.venv/bin/python'),'-B',str(self.root/'tools/enroll_typing.py'),str(self.session)],
+                                  stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,timeout=600)
+            if result.returncode:raise RuntimeError(result.stderr.decode(errors='replace')[-1000:])
+            report=json.loads((self.session/'typing-report.json').read_text())
+            if report['installed']:
+                control('reload-typing-templates')
+                control('enable');self.paused=False
+            message=('Your voice samples are active. The assistant is listening again.' if report['installed']
+                     else ('Recording issues are listed below. Retry only those recordings.' if any(i.get('retry_recommended') for i in report.get('issues',[])) else 'Your recordings are saved. Recognition needs adjustment; no retake is required.'))
+            self.set(phase='done',message=message,report=report)
+        except Exception as exc:self.set(phase='error',message=str(exc))
 
 
 def replay_segment(pcm, kind, listener, vosk, wav, profile, vad=None):
@@ -344,14 +399,15 @@ def serve(args):
     selected = {'filtered': args.filtered, 'raw': args.raw}
     if any(value not in names or value.endswith('.monitor') for value in selected.values()):
         raise SystemExit('Không tìm thấy đúng hai nguồn micro; không tự đổi sang nguồn khác.')
-    studio = Studio(ROOT, selected)
+    studio = Studio(ROOT, selected, args.profile)
+    if args.session:studio.resume(args.session)
     token = secrets.token_urlsafe(24)
-    html = (Path(__file__).with_name('keyword_studio.html')).read_text()
+    html = Path(__file__).with_name('typing_studio.html' if args.profile=='typing' else 'keyword_studio.html').read_text()
     server = ThreadingHTTPServer(('127.0.0.1', 0), make_handler(studio, token, html))
     server.daemon_threads = True
     url = f'http://127.0.0.1:{server.server_port}/{token}/'
     runtime = Path(os.environ.get('XDG_RUNTIME_DIR', f'/run/user/{os.getuid()}')) / 'hey-gpt'
-    private_json(runtime / 'recording-studio.json', {'url': url, 'pid': os.getpid()})
+    private_json(runtime / ('typing-studio.json' if args.profile=='typing' else 'recording-studio.json'), {'url': url, 'pid': os.getpid()})
     print(url, flush=True)
     # A hard lifetime also bounds forgotten local servers. Captures are shorter.
     timer = threading.Timer(3600, server.shutdown)
@@ -369,6 +425,8 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Thu và thử lại từ khóa local, không mở ChatGPT.')
     commands = parser.add_subparsers(dest='command', required=True)
     recorder = commands.add_parser('serve')
+    recorder.add_argument('--session',type=Path,help='Resume existing recordings without recording again')
+    recorder.add_argument('--profile', choices=('voice','typing'), default='voice')
     recorder.add_argument('--filtered', default='mic_noise_suppressed')
     recorder.add_argument('--raw', default='alsa_input.pci-0000_00_1f.3.analog-stereo')
     replay = commands.add_parser('evaluate')

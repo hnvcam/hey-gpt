@@ -15,10 +15,11 @@ import socket
 import struct
 import time
 from wav2vec_recognizer import Wav2VecVietnamese, wake_match, load_wake_profile
-from audio_control import SpeechGate, STOP_PHRASES, stop_command, rms
+from audio_control import PersonalSpeechGate, SpeechGate, STOP_PHRASES, stop_command, rms
 from acoustic_keywords import acoustic_accept
 from voice_activity import VoiceActivity
 from conversation_idle import ConversationIdle
+from dictation import ENGLISH_TRIGGERS, ENGLISH_STOPS, command_text, MAX_SECONDS, Parakeet, EnglishCommands, Recording, command_match, keyboard_text, load_settings, save_settings
 
 BASE = Path(__file__).resolve().parent
 MAX_FRAME = 4096
@@ -140,6 +141,21 @@ class Listener:
         self.recognition_jobs = set()
         self.engine_busy = set()
         self.last_recognizer = "none"
+        self.dictation_settings = load_settings()
+        self.parakeet = Parakeet(BASE)
+        self.model_task = None
+        self.dictation_job = None
+        self.recording = None
+        self.english = None
+        self.english_state = 'not-loaded'
+        self.english_loading = None
+        self.english_busy = False
+        self.english_job = None
+        self.english_stats = {'checks':0,'matches':0,'vosk_matches':0,'parakeet_matches':0,
+                              'personal_matches':0,'errors':0,'last_engine':'none','latency_ms':0}
+        self.keyboard = None
+        self.dictation_error = None
+        self.dictation_count = 0
         self.engines = {name: {"state": "not-loaded" if engine_mode in {"both", name} else "disabled",
                                "checks": 0, "matches": 0, "skipped": 0, "latency_ms": 0}
                         for name in ("vosk", "wav2vec2")}
@@ -151,6 +167,13 @@ class Listener:
                 "browser_connected": self.browser is not None, "wake_id": self.wake_id,
                 "browser_state": self.browser_state, "browser_detail": self.browser_detail,
                 "last_error": self.last_error, "listen_mode": self.phase,
+                "dictation": {**self.parakeet.snapshot(), "settings":dict(self.dictation_settings),
+                              "commands":self.english_state,
+                              "personal_templates":bool(self.wav2vec and getattr(self.wav2vec,'typing_templates',None)),
+                              "command_detection":dict(self.english_stats), "phase":self.phase if self.phase.startswith('typing') else 'idle',
+                              "error":self.dictation_error or self.parakeet.error,
+                              "completed":self.dictation_count,
+                              "recorded_seconds":round(self.recording.elapsed,1) if self.recording else 0},
                 "ready_sound": dict(self.ready_sound), "last_voice_stop": self.last_voice_stop,
                 "stop_echo_suppressed": self.stop_echo_suppressed,
                 "silence_seconds": self.silence_seconds,
@@ -187,6 +210,7 @@ class Listener:
                 self.send(writer, payload)
 
     async def disarm(self, detail="user-disarmed"):
+        await self.cancel_dictation()
         self.reply_guard.reset()
         self.wake_id = None
         for job in (self.launch_task, self.chime_task):
@@ -286,7 +310,9 @@ class Listener:
     def browser_disconnected(self):
         self.browser = None
         self.browser_state = 'IDLE'
-        if self.enabled:
+        if self.phase.startswith('typing'):
+            self.publish(self.state, self.detail, self.mic)
+        elif self.enabled:
             # Closing Chrome is not an instruction to stop the local wake mic.
             self.return_to_wake('browser-disconnected-local-still-listening')
         else:
@@ -326,6 +352,37 @@ class Listener:
                 await self.begin_wake()
             else:
                 self.send(writer, {'type': 'error', 'detail': 'assistant-not-listening'})
+        elif action in {'typing', 'model-load', 'model-unload', 'dictation-settings', 'reload-typing-templates'} and writer is not self.browser:
+            if action == 'reload-typing-templates':
+                try:
+                    if not self.wav2vec:raise RuntimeError('wake-model-not-ready')
+                    await asyncio.to_thread(self.wav2vec.reload_typing_templates)
+                    self.publish(self.state,self.detail,self.mic)
+                except Exception:
+                    self.send(writer,{'type':'error','detail':'typing-templates-reload-failed'})
+            elif action == 'dictation-settings':
+                try:
+                    self.dictation_settings = save_settings(msg.get('settings'))
+                except (ValueError, OSError):
+                    self.send(writer, {'type':'error','detail':'invalid-or-unwritable-dictation-settings'})
+                self.publish(self.state,self.detail,self.mic)
+            elif action == 'model-load':
+                self.start_model_load()
+            elif action == 'model-unload':
+                self.recognition_epoch+=1
+                if self.english_job and not self.english_job.done():
+                    self.english_job.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):await self.english_job
+                await self.cancel_dictation()
+                if self.model_task and not self.model_task.done():
+                    self.model_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):await self.model_task
+                await self.parakeet.unload()
+                self.publish(self.state,self.detail,self.mic)
+            elif self.enabled and self.mic and self.phase=='wake' and await unlocked_session():
+                self.begin_dictation()
+            else:
+                self.send(writer,{'type':'error','detail':'assistant-not-listening'})
         elif action == "report" and writer is self.browser:
             allowed = {"IDLE", "VOICE", "DICTATION", "WAITING", "NEEDS_ACTION", "STOPPED"}
             if msg.get("state") in allowed:
@@ -408,12 +465,184 @@ class Listener:
                 self.browser_state = 'WAITING'
                 self.publish('LISTENING','chrome-busy-local-still-listening',self.mic)
         elif action == 'detach' and writer is self.browser:
-            if self.enabled:
+            if self.enabled and not self.phase.startswith('typing'):
                 self.return_to_wake('browser-disconnected-local-still-listening')
         elif action == "status":
             self.send(writer, self.snapshot())
         else:
             self.send(writer, {"type": "error", "detail": "unsupported-command"})
+
+    async def prepare_english(self):
+        self.english_state='loading'
+        try:
+            self.english=await asyncio.to_thread(EnglishCommands,BASE/'models/vosk-model-small-en-us-0.15')
+            self.english_state='ready'
+        except Exception:
+            self.english_state='unavailable'
+        self.publish(self.state,self.detail,self.mic)
+
+    def start_model_load(self):
+        if not self.model_task or self.model_task.done():
+            self.model_task=asyncio.create_task(self.load_dictation_model())
+        return self.model_task
+
+    async def load_dictation_model(self):
+        self.publish(self.state,self.detail,self.mic)
+        try:
+            await self.parakeet.load()
+        except asyncio.CancelledError:raise
+        except Exception:pass
+        self.publish(self.state,self.detail,self.mic)
+
+    async def ensure_keyboard(self):
+        if self.keyboard and self.keyboard.returncode is None:return
+        self.keyboard=await asyncio.create_subprocess_exec(
+            '/usr/bin/python3','-B',str(BASE/'keyboard_input.py'),
+            stdin=asyncio.subprocess.PIPE,stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.DEVNULL)
+        try:
+            reply=json.loads(await asyncio.wait_for(self.keyboard.stdout.readline(),5))
+            if reply.get('state')!='ready':raise RuntimeError('keyboard-input-unavailable')
+        except BaseException:
+            await self.close_keyboard()
+            raise
+
+    async def close_keyboard(self):
+        proc,self.keyboard=self.keyboard,None
+        if proc and proc.returncode is None:
+            with contextlib.suppress(ProcessLookupError):proc.terminate()
+            await proc.wait()
+
+    def begin_dictation(self):
+        if not self.enabled or self.phase!='wake':return
+        self.recognition_epoch+=1
+        self.phase='typing-loading';self.phase_since=time.monotonic()
+        self.dictation_error=None
+        self.publish('TYPING_LOADING','preparing-english-dictation',self.mic)
+        self.dictation_job=asyncio.create_task(self.prepare_dictation())
+
+    async def prepare_dictation(self):
+        try:
+            await asyncio.shield(self.start_model_load())
+            if self.parakeet.state!='ready':raise RuntimeError('parakeet-load-failed')
+            await self.ensure_keyboard()
+            if not self.enabled or self.phase!='typing-loading':return
+            if not await unlocked_session():raise RuntimeError('screen-locked-or-session-unavailable')
+            # Capture starts after the cue so its speaker audio cannot enter text.
+            await command('paplay','--client-name=Hey GPT dictation ready',str(BASE/'sounds/ready.wav'))
+            if not self.enabled or self.phase!='typing-loading':return
+            if not await unlocked_session():raise RuntimeError('screen-locked-or-session-unavailable')
+            self.ready_sound.update(state='played',count=self.ready_sound['count']+1,mode='dictation',at=int(time.time()))
+            self.recording=Recording(self.dictation_settings['silence_seconds'])
+            self.phase='typing-recording';self.phase_since=time.monotonic()
+            self.publish('TYPING_RECORDING','speak-english-stop-typing-or-silence',self.mic)
+        except asyncio.CancelledError:raise
+        except Exception:
+            self.dictation_failed('dictation-not-ready-check-model-keyboard-or-sound')
+
+    def dictation_failed(self, code):
+        self.dictation_error=code
+        self.recording=None
+        self.recognition_epoch+=1
+        self.phase='wake';self.phase_since=time.monotonic()
+        self.publish('LISTENING',code,self.mic)
+
+    async def cancel_dictation(self):
+        job,self.dictation_job=self.dictation_job,None
+        if job and job is not asyncio.current_task() and not job.done():
+            job.cancel()
+            with contextlib.suppress(asyncio.CancelledError):await job
+        self.recording=None
+        if self.phase.startswith('typing'):
+            self.recognition_epoch+=1;self.phase='wake';self.phase_since=time.monotonic()
+            self.publish('LISTENING','dictation-cancelled',self.mic)
+
+    def finish_dictation(self, end=None):
+        if self.phase!='typing-recording' or self.recording is None:return
+        recording,self.recording=self.recording,None
+        # Stop-command-only recordings contain no dictated speech before the cut.
+        has_content=recording.spoke and (end is None or recording.first_speech is not None and recording.first_speech<end)
+        pcm=recording.take(end) if has_content else b''
+        self.phase='typing-transcribing';self.phase_since=time.monotonic()
+        self.publish('TYPING_TRANSCRIBING','transcribing-on-rtx-4060',self.mic)
+        self.dictation_job=asyncio.create_task(self.transcribe_and_type(pcm))
+
+    async def transcribe_and_type(self, pcm):
+        try:
+            text=keyboard_text(await self.parakeet.transcribe(pcm)) if pcm else ''
+            pcm=b''
+            if self.enabled and self.phase=='typing-transcribing' and text:
+                sid=await unlocked_session()
+                if not sid:raise RuntimeError('screen-locked-or-session-unavailable')
+                await self.ensure_keyboard()
+                self.phase='typing-inserting'
+                self.publish('TYPING_INSERTING','typing-into-focused-field',self.mic)
+                self.keyboard.stdin.write(json.dumps({'text':text,'session':sid}).encode()+b'\n')
+                await self.keyboard.stdin.drain()
+                reply=json.loads(await asyncio.wait_for(self.keyboard.stdout.readline(),max(5,len(text)*.015)))
+                if reply.get('state')!='typed':raise RuntimeError('keyboard-input-failed')
+                self.dictation_count+=1
+            text=''
+            self.recognition_epoch+=1;self.phase='wake';self.phase_since=time.monotonic()
+            self.publish('LISTENING','dictation-complete-waiting-for-wake',self.mic)
+        except asyncio.CancelledError:
+            # Kill pending keyboard work as well as inference. Never finish an
+            # insertion after Disable, screen lock or Unload.
+            await self.close_keyboard()
+            raise
+        except Exception:
+            await self.close_keyboard()
+            self.dictation_failed('dictation-transcription-or-keyboard-failed')
+
+    def submit_english(self, utterance, sid):
+        if (not self.english and self.parakeet.state!='ready') or self.english_busy:return
+        self.english_busy=True
+        context=self.recognition_context()
+        end=len(self.recording.audio) if self.recording else None
+        job=asyncio.create_task(self.recognize_english(utterance,sid,context,end))
+        self.english_job=job
+        self.recognition_jobs.add(job);job.add_done_callback(self.recognition_jobs.discard)
+
+    async def recognize_english(self, utterance, sid, context, end):
+        started=time.monotonic()
+        try:
+            if not self.result_is_current(context,started):return
+            kind=context[1]
+            phrases=ENGLISH_TRIGGERS if kind=='wake' else ENGLISH_STOPS
+            if kind not in {'wake','typing-recording'}:return
+            if kind=='typing-recording' and utterance.preceding_silence+1e-6<.8:return
+            self.english_stats['checks']+=1
+            acoustic_kind='typing' if kind=='wake' else 'typing-stop'
+            accepted=False
+            engine='personal'
+            if self.wav2vec and getattr(self.wav2vec,'typing_templates',None):
+                accepted=await asyncio.to_thread(self.wav2vec.match_typing,utterance.pcm,acoustic_kind)
+            if not self.result_is_current(context,started):return
+            if not accepted:
+                result={}
+                engine='vosk'
+                if self.english:
+                    result=await asyncio.wait_for(asyncio.to_thread(self.english.decode,utterance.pcm),3)
+                accepted=command_match(result,phrases)
+            if not self.result_is_current(context,started):return
+            # Parakeet's full English vocabulary can recover words Vosk missed.
+            # Never load it just to scan wake audio: Unload must stay unloaded.
+            if not accepted and self.parakeet.state=='ready':
+                text=await self.parakeet.transcribe(utterance.pcm)
+                accepted=command_text(text) in phrases
+                engine='parakeet'
+            self.english_stats['last_engine']=engine
+            if accepted and self.result_is_current(context,started) and await unlocked_session(sid) and self.result_is_current(context,started):
+                self.english_stats['matches']+=1
+                self.english_stats[engine+'_matches']+=1
+                if kind=='wake':self.begin_dictation()
+                else:self.finish_dictation(max(0,end-len(utterance.pcm)))
+        except asyncio.CancelledError:raise
+        except Exception:
+            self.english_stats['errors']+=1
+        finally:
+            self.english_stats['latency_ms']=round((time.monotonic()-started)*1000)
+            self.english_busy=False
+            self.publish(self.state,self.detail,self.mic)
 
     def request_voice_stop(self, writer, reason):
         if self.phase != "conversation" or not self.session:
@@ -557,6 +786,8 @@ class Listener:
         proc = None
         try:
             self.publish("ARMING", "loading-offline-model")
+            if self.english is None and (not self.english_loading or self.english_loading.done()):
+                self.english_loading=asyncio.create_task(self.prepare_english())
             vosk = None
             if self.engine_mode in {"both", "wav2vec2"}:
                 if self.wav2vec is not None and self.vad is not None:
@@ -587,7 +818,7 @@ class Listener:
             deadline = time.monotonic() + self.max_seconds if self.max_seconds else float("inf")
             check_at = 0
             status_at = 0
-            gate, gate_phase = SpeechGate(), self.phase
+            gate, personal_gate, gate_phase = SpeechGate(), PersonalSpeechGate(), self.phase
             while time.monotonic() < deadline:
                 now = time.monotonic()
                 if now >= check_at:
@@ -602,14 +833,24 @@ class Listener:
                     self.publish("CONVERSATION" if self.phase == "conversation" else "LISTENING",
                                  "listening-for-stop-commands" if self.phase == "conversation" else "offline-hey-gpt-only", True)
                 if gate_phase != self.phase:
-                    gate, gate_phase = SpeechGate(), self.phase
+                    gate, personal_gate, gate_phase = SpeechGate(), PersonalSpeechGate(), self.phase
                 activity = await asyncio.to_thread(self.vad.feed,data) if self.vad else None
                 voiced, utterance = gate.feed(data,voiced=activity)
+                english_voiced,english_utterance=voiced,utterance
+                if self.phase in {'wake','typing-recording'} and self.wav2vec and getattr(self.wav2vec,'typing_templates',None):
+                    english_voiced,english_utterance=personal_gate.feed(data,voiced=activity)
                 self.audio_level = round(rms(data))
                 now = time.monotonic()
                 if now >= status_at:
                     self.publish(self.state, self.detail, self.mic)
                     status_at = now + 1
+                if self.phase=='typing-recording' and self.recording:
+                    ended=self.recording.feed(data,english_voiced)
+                    if english_utterance and not english_utterance.too_long:self.submit_english(english_utterance,sid)
+                    if ended and (not self.english_busy or self.recording.elapsed+1e-6>=MAX_SECONDS):self.finish_dictation()
+                    continue
+                if self.phase.startswith('typing'):
+                    continue
                 if self.phase == "conversation" and voiced:
                     self.last_activity = now
                 if self.phase in {"opening", "closing"}:
@@ -618,6 +859,8 @@ class Listener:
                     elif self.phase == "closing" and now - self.phase_since > 20:
                         raise RuntimeError("browser-transition-timeout")
                     continue
+                if self.phase=='wake' and english_utterance and not english_utterance.too_long:
+                    self.submit_english(english_utterance,sid)
                 if utterance and not utterance.too_long:
                     kind = self.phase
                     if kind == "wake" or (kind == "conversation" and utterance.preceding_silence + 1e-6 >= 1.0):
@@ -646,6 +889,7 @@ class Listener:
                 except asyncio.TimeoutError:
                     proc.kill()
                     await proc.wait()
+            await self.cancel_dictation()
             self.enabled = False
             self.phase, self.session = "wake", None
             self.publish("DISARMED", self.detail)
@@ -700,6 +944,8 @@ async def main(args):
     # Warm the GPU and start local wake listening independently of Chrome.
     if args.engine_mode in {"both", "wav2vec2"}:
         listener.wav2vec_loading = asyncio.create_task(listener.prepare_wav2vec())
+    listener.english_loading=asyncio.create_task(listener.prepare_english())
+    if listener.dictation_settings['autoload']:listener.start_model_load()
     if args.auto_listen:
         await listener.arm()
     stop = asyncio.Event()
@@ -720,6 +966,12 @@ async def main(args):
         for writer in clients:
             with contextlib.suppress(ConnectionError, asyncio.TimeoutError):
                 await asyncio.wait_for(writer.wait_closed(), 2)
+    if listener.model_task and not listener.model_task.done():
+        listener.model_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):await listener.model_task
+    await listener.parakeet.unload()
+    if listener.keyboard and listener.keyboard.returncode is None:
+        listener.keyboard.terminate();await listener.keyboard.wait()
     path.unlink(missing_ok=True)
 
 

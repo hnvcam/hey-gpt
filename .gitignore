@@ -48,3 +48,5 @@ backups/
 
 # Bundled application cue (personal recordings remain ignored)
 !sounds/ready.wav
+
+.parakeet-venv/

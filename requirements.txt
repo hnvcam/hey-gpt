@@ -3,3 +3,6 @@
 numpy==2.5.4
 transformers==4.57.6
 huggingface-hub==0.36.2
+
+# Lightweight English wake/stop command detection while Parakeet is unloaded.
+vosk==0.3.45

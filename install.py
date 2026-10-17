@@ -37,6 +37,9 @@ def unit_quote(path):
 
 unit = (ROOT/"systemd/hey-gpt.service.in").read_text()
 unit = unit.replace("@PYTHON@",unit_quote(python)).replace("@APP@/daemon.py",unit_quote(ROOT/"daemon.py"))
+dictation_config=args.config_dir/'hey-gpt'
+dictation_config.mkdir(mode=0o700,parents=True,exist_ok=True)
+unit=unit.replace('@DICTATION_CONFIG@',unit_quote(dictation_config))
 service = args.config_dir/"systemd/user/hey-gpt.service"
 tray_service = args.config_dir/"systemd/user/hey-gpt-tray.service"
 manifest = args.config_dir/"google-chrome/NativeMessagingHosts/org.local.hey_gpt.json"

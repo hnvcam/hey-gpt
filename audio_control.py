@@ -61,3 +61,13 @@ class SpeechGate:
         self.preroll.append(pcm)
         self._prior_quiet=self.quiet
         return voiced,result
+
+
+class PersonalSpeechGate(SpeechGate):
+    """Do not let a VAD miss discard a clear personal command.
+
+    Audio energy may establish a boundary; the enrolled whole-utterance matcher
+    must still confirm the command. This gate is not used for Voice hang-up.
+    """
+    def feed(self, pcm, voiced=None):
+        return super().feed(pcm,voiced=True if voiced else None)

@@ -4,7 +4,7 @@ Trợ lý tiếng Việt chạy nền trên **Pop!_OS 24.04 / Wayland**: nghe �
 
 ## Cách hoạt động
 
-- **Wav2Vec2 tiếng Việt + Silero VAD trên RTX 4060 CUDA** nhận từ gọi và lệnh dừng. Có thể dùng thêm mẫu âm thanh cá nhân. Cấu hình dịch vụ hiện tại không chạy Vosk, không tự chuyển mô hình sang CPU/GPU khác.
+- **Wav2Vec2 tiếng Việt + Silero VAD trên RTX 4060 CUDA** nhận từ gọi và lệnh dừng. Có thể dùng thêm mẫu âm thanh cá nhân. Nhánh Voice mặc định không chạy Vosk tiếng Việt, không tự chuyển mô hình sang CPU/GPU khác.
 - Khi bật trợ lý, micro local nghe liên tục cả trong phiên Voice. Chrome mở nguồn micro riêng; ứng dụng không chuyển hướng âm thanh hằng ngày.
 - Nói riêng “hết”, “kết thúc”, “dừng lại” hoặc “done” sau khoảng nghỉ 1–2 giây để đóng Voice. Những từ này nằm trong một câu dài không được coi là lệnh dừng. Lệnh dừng local chỉ được nhận sau khi âm thanh ChatGPT đã ngừng; bỏ qua từ khóa thu trong lúc ChatGPT phát tiếng để tránh loa tự kích hoạt lệnh dừng. Muốn ngắt ngay khi đang phát, dùng menu GPT → Tắt trợ lý và kết thúc Voice hoặc nút End Voice.
 - Hoặc chờ **15 giây sau khi lượt trả lời trên giao diện hoàn tất và kênh âm thanh Voice xác nhận yên lặng**, đồng thời người dùng không nói tiếp. Trong lúc xử lý/truyền câu trả lời, bộ đếm chưa chạy.
@@ -130,3 +130,121 @@ Kiểm chứng thật bản **0.7.1** ngày 17/10/2026: mở một tab thử ri�
 Adapter quan sát thụ động kênh WebRTC sẵn có và cấu trúc lượt mới nhất trong DOM. `state_update.listening` từ server **không đủ** để kết luận Chrome đã đọc xong. Bản 0.7.1 đọc riêng các bộ đếm audio của kết nối Voice qua WebRTC getStats: năng lượng tích lũy, thời lượng mẫu, gói nhận và độ trễ jitter buffer. Chỉ trạng thái busy/quiet/unknown được chuyển về dịch vụ; không thu, lưu hay định tuyến lại audio GPT, không đo loa/tab audible, không lấy cookie/token/SDP và không gửi/replay request riêng. Thiếu bộ đếm, mạng đứng, peer không rõ hoặc báo cáo cũ đều là unknown và giữ cuộc gọi mở. Dấu DOM có thể đổi khi ChatGPT cập nhật; không có dấu hoàn tất rõ và audio quiet được xác nhận thì chưa đếm. Chữ đã hoàn tất không được phép ghi đè âm thanh đang phát; ngay trước khi đóng, tiện ích yêu cầu một mẫu trạng thái mới và kiểm tra lại đủ 15 giây idle liên tục. Nếu hoạt động quay lại, hủy đóng và giữ nguyên cuộc gọi. `last_voice_stop` trong trạng thái/journal lưu lý do dừng và các cờ hoạt động, không lưu lời nói. Kiểm chứng trên chưa phải phép đo thời điểm phát mẫu âm cuối trong mọi điều kiện mạng.
 
 Sau khi Voice đã đóng, nếu giao diện kẹt quá 15 giây, tiện ích có thể tải lại trang một lần khi không có bản nháp, phiên ghi âm hoặc thông báo lỗi/hạn mức. Việc phục hồi không tự mở cuộc gọi mới. Nhận từ khóa vẫn phụ thuộc micro, tiếng ồn và mẫu giọng; có thể dùng bộ thu local để hiệu chỉnh.
+
+
+## English keyboard dictation
+
+Say **“typing this”**, wait for the same two-note ready sound, then speak English.
+Text is inserted into the currently focused field without opening Chrome or
+moving focus. Finish by either staying silent (default **5 seconds**, configurable
+from 2–30 seconds, including 10) or pausing briefly and saying **“stop typing”**
+as a separate utterance. “End typing” and “typing end” work too. The stop phrase is removed from the audio sent to
+transcription. Recordings are limited to 3 minutes; audio and text are kept in
+memory and are not logged or saved. The agent returns to wake listening afterward.
+
+The tray's control panel has **Load model**, **Unload · free GPU memory** and
+**Load dictation model when the agent starts** (on by default). Unload terminates
+the separate GPU worker, releasing its VRAM. The small English Vosk command
+detector remains on CPU so “typing this” can load Parakeet again. Wait for the
+ready sound before speaking, especially after Unload. Changing the startup toggle
+only changes the next start; use Unload to release memory immediately.
+
+Transcription uses the official NVIDIA **parakeet-tdt-0.6b-v2**, English only,
+on the RTX 4060 UUID from `gpu.local.json`; it refuses CPU or another GPU. The
+[NVIDIA model](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2) is CC-BY-4.0,
+revision `ae9ad07059c7c739ffaf932226a8fe64ae2620b0`. Its NeMo runtime is isolated
+from the existing Vietnamese wake environment. The offline English command model
+is [Vosk small English US 0.15](https://alphacephei.com/vosk/models) (Apache 2.0).
+
+One-time setup, after the existing wake dependencies:
+
+```sh
+# The system Python helper uses evdev; already installed on this machine.
+sudo apt install python3-evdev
+.venv/bin/python -m pip install -r requirements.txt
+python3 tools/setup_dictation.py
+python3 install.py
+```
+
+Setup uses `hf` to download the pinned NVIDIA checkpoint and `uv` to create
+`.parakeet-venv`. Models, runtime and local settings stay out of Git. The running
+service has no internet address families and only loads local files. Settings
+are private in `~/.config/hey-gpt/dictation.json`; the service may write only this
+application configuration directory and its private runtime directory.
+
+Typing uses Linux uinput with the desktop user's existing device ACL; the agent
+never runs as root. `/dev/uinput` must be writable by the logged-in desktop user.
+If the device is missing or access is denied, fix the desktop's uinput access
+before using dictation. Do not make the device world writable. Use a **US English
+keyboard layout** with Caps Lock off. Smart quotes/dashes are normalized for this
+keyboard, and line breaks become spaces. The agent emits no Enter, Tab, Ctrl,
+Alt or clipboard shortcuts; review dictated terminal commands and press Enter
+yourself. Disable, screen lock and Unload cancel pending dictation. A field must
+have focus when insertion begins; the agent cannot inspect another app's cursor
+on Wayland, so it types wherever you have placed it.
+
+Local controls (same-user socket only; unavailable to the Chrome extension):
+
+```sh
+python3 hey_gpt_ctl.py model-load
+python3 hey_gpt_ctl.py model-unload
+python3 hey_gpt_ctl.py dictation-settings --autoload on --silence 10
+python3 hey_gpt_ctl.py typing  # manual equivalent of the spoken trigger
+```
+
+Dictation validation on 17 October 2026: 110 Python unit tests and all 84
+JavaScript tests passed. These simulate state transitions, command boundaries,
+silence timing, cancellation, keystroke events and the existing Voice behavior.
+Real RTX 4060 testing loaded NVIDIA's checkpoint in about 19 seconds, transcribed
+3–5 seconds of generated English speech in 51–98 ms with exact expected text,
+and transcribed 180 seconds in about 1.4 seconds. After clearing inference caches,
+idle model use was about 2.5 GB above the existing listener; terminating the worker
+returned VRAM to baseline. The RTX 5070 Ti remained unused. The installed hardened
+service reported both English commands and Parakeet ready with the original
+Vietnamese listener active and one microphone capture. These GPU checks used
+synthetic speech, not a claim of verified recognition of the user's live voice
+or insertion into every desktop application.
+
+Trigger reliability update: when the full-vocabulary English detector misses a
+command and Parakeet is already loaded, Parakeet checks the same isolated audio
+for the entire trigger or stop phrase. This never loads an unloaded model just
+to scan background speech. With Parakeet unloaded, a lower-confidence exact Vosk
+phrase requires agreement from a second command-grammar pass; grammar alone
+cannot wake the assistant. Punctuation is normalized, and phrases inside longer
+sentences still do not trigger. `dictation.command_detection` reports counters,
+recognizer and latency only, without keeping audio or recognized words.
+
+### Record personal English commands
+
+Run `.venv/bin/python tools/keyword_dataset.py serve --profile typing` and open
+the local URL it prints. Click **Record all 33 items**: five takes for each of
+“typing this”, “type this”, “stop typing”, “end typing” and “typing end”, plus
+silence and ordinary sentences. Wait for green, speak once, then stay quiet.
+Recording pauses the agent; no enrollment microphone opens before Record is
+clicked. Both raw and filtered recordings stay private under ignored `recordings/`.
+
+Click **Train & check my voice samples** after recording. Three takes per phrase
+form references; two separate takes and the ordinary sentences/noise are replayed
+through Silero and the real speech gate. Only reference takes are enrolled.
+All checks must pass before the candidate replaces `data/typing-templates`; old
+banks remain backed up. Recording problems identify the exact item to retry;
+recognition misses are agent issues and do not require a different pronunciation. Existing
+`data/keyword-templates` for Hey GPT and Vietnamese stops is never overwritten.
+
+Personal English matching uses the already-loaded Wav2Vec2 acoustic features on
+the RTX 4060, so it can recognize your typing trigger with Parakeet unloaded.
+Successful training reloads these references without reloading GPU models and
+turns the assistant back on. If you abandon the recorder, turn the agent back on
+from its tray menu. The local recorder expires after an hour; recordings remain
+on disk. The automatic checks do not replace live voice/cursor verification.
+
+Recording feedback distinguishes capture problems from recognition problems.
+Each issue names its item, phrase and take, with a reason. Empty, unreadable or
+heavily clipped audio gets a direct Retry button; a recognizer miss keeps the
+recording and is labeled as an agent adjustment, not a pronunciation failure.
+Personal English commands use a separate energy-assisted speech gate so clear
+user speech is not discarded solely because Silero misses it. The original
+ChatGPT Voice activity and hang-up gates are unchanged. On 17 October, replaying
+the user's saved 33-item session with this correction recovered item 20 (“end
+typing”, take 4); all 33 items matched their expected behavior, with no false
+triggers. This is recorded-audio validation, not a new live microphone test.

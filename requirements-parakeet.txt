@@ -1,0 +1,5 @@
+# Isolated runtime; never install into the Vietnamese wake .venv.
+nemo_toolkit[asr]==2.7.2
+torch==2.14.1
+numpy==2.5.4
+transformers==4.57.6
