@@ -32,12 +32,12 @@ class Utterance:
 
 class SpeechGate:
     """100 ms PCM blocks; 0.8 s trailing quiet closes a short utterance."""
-    def __init__(self,rate=16000,tail=0.8,max_speech=6.0,minimum_level=100.0):
+    def __init__(self,rate=16000,tail=0.8,max_speech=6.0,minimum_level=100.0,preroll_frames=5):
         self.rate=rate;self.tail=tail;self.max_speech=max_speech
         self.minimum_level=minimum_level
         self.noise=50.0;self.quiet=0.0;self.active=False
         self.frames=[];self.trailing=0.0;self.preceding=0.0;self.peak=0.0;self.length=0.0
-        self.preroll=deque(maxlen=5)
+        self.preroll=deque(maxlen=preroll_frames)
         self._prior_quiet=0.0
 
     def feed(self,pcm,voiced=None):

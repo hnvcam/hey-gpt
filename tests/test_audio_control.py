@@ -35,6 +35,16 @@ class CommandBoundaries(unittest.TestCase):
   utterance=gate.feed(block())[1]
   self.assertIsNotNone(utterance);self.assertAlmostEqual(utterance.preceding_silence,1.5)
   self.assertFalse(utterance.too_long)
+ def test_short_dictation_pause_does_not_include_previous_words_in_command(self):
+  gate=SpeechGate(tail=.35,preroll_frames=2)
+  for _ in range(10):gate.feed(block(2000),voiced=True)
+  for _ in range(4):gate.feed(block(),voiced=False)
+  for _ in range(8):gate.feed(block(3000),voiced=True)
+  utterance=None
+  for _ in range(4):utterance=gate.feed(block(),voiced=False)[1]
+  self.assertIsNotNone(utterance)
+  self.assertAlmostEqual(utterance.preceding_silence,.4)
+  self.assertNotIn(block(2000),utterance.pcm)
  def test_long_sentence_is_not_reduced_to_its_final_stop_word(self):
   gate=SpeechGate()
   for _ in range(15):gate.feed(block())

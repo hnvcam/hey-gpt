@@ -19,7 +19,8 @@ from audio_control import PersonalSpeechGate, SpeechGate, STOP_PHRASES, stop_com
 from acoustic_keywords import acoustic_accept
 from voice_activity import VoiceActivity
 from conversation_idle import ConversationIdle
-from dictation import ENGLISH_TRIGGERS, ENGLISH_STOPS, command_text, MAX_SECONDS, Parakeet, EnglishCommands, Recording, command_match, keyboard_text, load_settings, save_settings
+from dictation import ENGLISH_TRIGGERS, ENGLISH_STOPS, STOP_PAUSE, command_text, terminal_stop, MAX_SECONDS, Parakeet, EnglishCommands, Recording, command_match, keyboard_text, load_settings, save_settings
+from diagnostics import trace, trace_error
 
 BASE = Path(__file__).resolve().parent
 MAX_FRAME = 4096
@@ -145,6 +146,11 @@ class Listener:
         self.parakeet = Parakeet(BASE)
         self.model_task = None
         self.dictation_job = None
+        self.preview_job = None
+        self.preview_at = 0.
+        self.preview_text = ''
+        self.preview_seconds = 0.
+        self.preview_revision = 0
         self.recording = None
         self.english = None
         self.english_state = 'not-loaded'
@@ -156,6 +162,10 @@ class Listener:
         self.keyboard = None
         self.dictation_error = None
         self.dictation_count = 0
+        self.dictation_id=None
+        self.final_stop_candidate=None
+        self.last_finish_reason=None
+        self.trace_state=None
         self.engines = {name: {"state": "not-loaded" if engine_mode in {"both", name} else "disabled",
                                "checks": 0, "matches": 0, "skipped": 0, "latency_ms": 0}
                         for name in ("vosk", "wav2vec2")}
@@ -173,6 +183,10 @@ class Listener:
                               "command_detection":dict(self.english_stats), "phase":self.phase if self.phase.startswith('typing') else 'idle',
                               "error":self.dictation_error or self.parakeet.error,
                               "completed":self.dictation_count,
+                              "last_finish_reason":self.last_finish_reason,
+                              "preview_revision":self.preview_revision,
+                              "preview_seconds":self.preview_seconds,
+                              "preview_busy":bool(self.preview_job and not self.preview_job.done()),
                               "recorded_seconds":round(self.recording.elapsed,1) if self.recording else 0},
                 "ready_sound": dict(self.ready_sound), "last_voice_stop": self.last_voice_stop,
                 "stop_echo_suppressed": self.stop_echo_suppressed,
@@ -197,6 +211,10 @@ class Listener:
             writer.write(json.dumps(message, separators=(",", ":")).encode() + b"\n")
 
     def publish(self, state, detail, mic=False):
+        transition=(state,detail,mic)
+        if transition!=self.trace_state:
+            trace('daemon','state-changed',state=state,detail=detail,microphone_open=mic)
+            self.trace_state=transition
         self.state, self.detail, self.mic = state, detail, mic
         payload = self.snapshot()
         folder = runtime_dir()
@@ -467,6 +485,10 @@ class Listener:
         elif action == 'detach' and writer is self.browser:
             if self.enabled and not self.phase.startswith('typing'):
                 self.return_to_wake('browser-disconnected-local-still-listening')
+        elif action == 'dictation-preview' and writer is not self.browser:
+            # The transcript is sent only to this local requester, never to the
+            # status broadcast, status.json, logs, or the Chrome native host.
+            self.send(writer, {'type':'dictation-preview','text':self.preview_text})
         elif action == "status":
             self.send(writer, self.snapshot())
         else:
@@ -491,7 +513,7 @@ class Listener:
         try:
             await self.parakeet.load()
         except asyncio.CancelledError:raise
-        except Exception:pass
+        except Exception as exc:trace_error('daemon','model-load-error',exc)
         self.publish(self.state,self.detail,self.mic)
 
     async def ensure_keyboard(self):
@@ -517,6 +539,10 @@ class Listener:
         self.recognition_epoch+=1
         self.phase='typing-loading';self.phase_since=time.monotonic()
         self.dictation_error=None
+        self.dictation_id=secrets.token_hex(4)
+        self.final_stop_candidate=None;self.last_finish_reason=None
+        trace('daemon','dictation-start',dictation_id=self.dictation_id)
+        self.preview_text='';self.preview_seconds=0.;self.preview_at=0.;self.preview_revision=0
         self.publish('TYPING_LOADING','preparing-english-dictation',self.mic)
         self.dictation_job=asyncio.create_task(self.prepare_dictation())
 
@@ -536,17 +562,29 @@ class Listener:
             self.phase='typing-recording';self.phase_since=time.monotonic()
             self.publish('TYPING_RECORDING','speak-english-stop-typing-or-silence',self.mic)
         except asyncio.CancelledError:raise
-        except Exception:
+        except Exception as exc:
+            trace_error('daemon','dictation-prepare-error',exc,dictation_id=self.dictation_id)
             self.dictation_failed('dictation-not-ready-check-model-keyboard-or-sound')
 
     def dictation_failed(self, code):
+        trace('daemon','dictation-failed',dictation_id=self.dictation_id,code=code)
         self.dictation_error=code
+        self.preview_text=''
         self.recording=None
+        self.final_stop_candidate=None
         self.recognition_epoch+=1
         self.phase='wake';self.phase_since=time.monotonic()
         self.publish('LISTENING',code,self.mic)
 
     async def cancel_dictation(self):
+        if self.phase.startswith('typing'):
+            trace('daemon','dictation-cancelled',dictation_id=self.dictation_id,phase=self.phase)
+        self.final_stop_candidate=None
+        preview,self.preview_job=self.preview_job,None
+        if preview and not preview.done():
+            preview.cancel()
+            with contextlib.suppress(asyncio.CancelledError):await preview
+        self.preview_text=''
         job,self.dictation_job=self.dictation_job,None
         if job and job is not asyncio.current_task() and not job.done():
             job.cancel()
@@ -559,6 +597,11 @@ class Listener:
     def finish_dictation(self, end=None):
         if self.phase!='typing-recording' or self.recording is None:return
         recording,self.recording=self.recording,None
+        self.last_finish_reason='spoken-command' if end is not None else ('recording-limit' if recording.elapsed+1e-6>=MAX_SECONDS else 'silence-timeout')
+        self.final_stop_candidate=recording.stop_candidate() if end is None else None
+        trace('daemon','dictation-finish',dictation_id=self.dictation_id,reason=self.last_finish_reason,
+              recorded_seconds=round(recording.elapsed,2),cut_seconds=round(end/32000,2) if end is not None else None,
+              tail_check=bool(self.final_stop_candidate))
         # Stop-command-only recordings contain no dictated speech before the cut.
         has_content=recording.spoke and (end is None or recording.first_speech is not None and recording.first_speech<end)
         pcm=recording.take(end) if has_content else b''
@@ -566,9 +609,52 @@ class Listener:
         self.publish('TYPING_TRANSCRIBING','transcribing-on-rtx-4060',self.mic)
         self.dictation_job=asyncio.create_task(self.transcribe_and_type(pcm))
 
+    def maybe_preview_dictation(self):
+        record=self.recording
+        if (not record or not record.spoke or record.elapsed<self.preview_at+5 or
+                self.english_busy or self.parakeet.state!='ready' or
+                self.preview_job and not self.preview_job.done()):return
+        self.preview_at=record.elapsed
+        self.preview_job=asyncio.create_task(self.preview_dictation(record,bytes(record.audio),record.elapsed))
+
+    async def preview_dictation(self, record, pcm, seconds):
+        started=time.monotonic()
+        try:
+            # Re-decode the entire bounded recording so later context can revise
+            # earlier wording. No text is committed to the keyboard here.
+            text,_=terminal_stop(keyboard_text(await self.parakeet.transcribe(pcm)))
+            if (self.enabled and self.phase=='typing-recording' and self.recording is record
+                    and await unlocked_session()):
+                self.preview_text=text;self.preview_seconds=round(seconds,1)
+                self.preview_revision+=1
+                trace('daemon','preview-ready',dictation_id=self.dictation_id,seconds=round(seconds,2),
+                      revision=self.preview_revision,latency_ms=round((time.monotonic()-started)*1000))
+                self.publish(self.state,self.detail,self.mic)
+        except asyncio.CancelledError:raise
+        except Exception as exc:
+            trace_error('daemon','preview-error',exc,dictation_id=self.dictation_id)
+            self.dictation_failed('dictation-preview-failed')
+
     async def transcribe_and_type(self, pcm):
         try:
+            # Drain the partial reply before the final decode, which excludes
+            # stop-command audio. A late preview cannot overwrite the final text.
+            if self.preview_job:await self.preview_job
+            if not self.enabled or self.phase!='typing-transcribing':return
+            candidate,self.final_stop_candidate=self.final_stop_candidate,None
+            if candidate and pcm:
+                cut,tail=candidate
+                tail_command=command_text(await self.parakeet.transcribe(tail))
+                matched=tail_command in ENGLISH_STOPS
+                trace('daemon','final-stop-check',dictation_id=self.dictation_id,matched=matched,
+                      command=tail_command if matched else None)
+                if matched:
+                    pcm=pcm[:cut];self.last_finish_reason='spoken-command-final-check'
             text=keyboard_text(await self.parakeet.transcribe(pcm)) if pcm else ''
+            text,stop=terminal_stop(text)
+            if stop:
+                self.last_finish_reason='spoken-command-final-check'
+                trace('daemon','terminal-command-removed',dictation_id=self.dictation_id,command=stop)
             pcm=b''
             if self.enabled and self.phase=='typing-transcribing' and text:
                 sid=await unlocked_session()
@@ -581,7 +667,8 @@ class Listener:
                 reply=json.loads(await asyncio.wait_for(self.keyboard.stdout.readline(),max(5,len(text)*.015)))
                 if reply.get('state')!='typed':raise RuntimeError('keyboard-input-failed')
                 self.dictation_count+=1
-            text=''
+                trace('daemon','dictation-typed',dictation_id=self.dictation_id,characters=len(text),reason=self.last_finish_reason)
+            text='';self.preview_text=''
             self.recognition_epoch+=1;self.phase='wake';self.phase_since=time.monotonic()
             self.publish('LISTENING','dictation-complete-waiting-for-wake',self.mic)
         except asyncio.CancelledError:
@@ -589,12 +676,15 @@ class Listener:
             # insertion after Disable, screen lock or Unload.
             await self.close_keyboard()
             raise
-        except Exception:
+        except Exception as exc:
+            trace_error('daemon','dictation-final-error',exc,dictation_id=self.dictation_id)
             await self.close_keyboard()
             self.dictation_failed('dictation-transcription-or-keyboard-failed')
 
     def submit_english(self, utterance, sid):
-        if (not self.english and self.parakeet.state!='ready') or self.english_busy:return
+        if (not self.english and self.parakeet.state not in {'ready','transcribing'}) or self.english_busy:
+            if self.phase=='typing-recording':trace('daemon','command-skipped',reason='recognizer-busy-or-unavailable',seconds=round(len(utterance.pcm)/32000,2))
+            return
         self.english_busy=True
         context=self.recognition_context()
         end=len(self.recording.audio) if self.recording else None
@@ -604,18 +694,21 @@ class Listener:
 
     async def recognize_english(self, utterance, sid, context, end):
         started=time.monotonic()
+        outcome='stale';personal=False;engine='none';phrase=None
         try:
             if not self.result_is_current(context,started):return
             kind=context[1]
             phrases=ENGLISH_TRIGGERS if kind=='wake' else ENGLISH_STOPS
             if kind not in {'wake','typing-recording'}:return
-            if kind=='typing-recording' and utterance.preceding_silence+1e-6<.8:return
+            if kind=='typing-recording' and utterance.preceding_silence+1e-6<STOP_PAUSE:
+                outcome='insufficient-pause';return
             self.english_stats['checks']+=1
             acoustic_kind='typing' if kind=='wake' else 'typing-stop'
             accepted=False
             engine='personal'
             if self.wav2vec and getattr(self.wav2vec,'typing_templates',None):
-                accepted=await asyncio.to_thread(self.wav2vec.match_typing,utterance.pcm,acoustic_kind)
+                personal=await asyncio.to_thread(self.wav2vec.match_typing,utterance.pcm,acoustic_kind)
+                accepted=personal and kind!='wake'
             if not self.result_is_current(context,started):return
             if not accepted:
                 result={}
@@ -623,24 +716,41 @@ class Listener:
                 if self.english:
                     result=await asyncio.wait_for(asyncio.to_thread(self.english.decode,utterance.pcm),3)
                 accepted=command_match(result,phrases)
+                # Personal acoustic similarity alone caused unintended starts.
+                # Even an enrolled voice must say the exact lexical command.
+                if personal and kind=='wake' and command_text(result.get('text','')) in phrases:
+                    accepted=command_match(result,phrases,minimum=.35)
+                if accepted:phrase=command_text(result['text'])
             if not self.result_is_current(context,started):return
             # Parakeet's full English vocabulary can recover words Vosk missed.
             # Never load it just to scan wake audio: Unload must stay unloaded.
-            if not accepted and self.parakeet.state=='ready':
+            if not accepted and self.parakeet.state in {'ready','transcribing'}:
                 text=await self.parakeet.transcribe(utterance.pcm)
                 accepted=command_text(text) in phrases
+                if accepted:phrase=command_text(text)
                 engine='parakeet'
+            if accepted and personal:engine='personal'
+            outcome='no-match' if not accepted else 'stale'
             self.english_stats['last_engine']=engine
             if accepted and self.result_is_current(context,started) and await unlocked_session(sid) and self.result_is_current(context,started):
                 self.english_stats['matches']+=1
                 self.english_stats[engine+'_matches']+=1
+                outcome='accepted'
+                trace('daemon','command-accepted',phase=kind,engine=engine,personal_match=personal,command=phrase)
                 if kind=='wake':self.begin_dictation()
-                else:self.finish_dictation(max(0,end-len(utterance.pcm)))
+                else:
+                    self.preview_text=terminal_stop(self.preview_text)[0]
+                    self.finish_dictation(max(0,end-len(utterance.pcm)))
         except asyncio.CancelledError:raise
-        except Exception:
+        except Exception as exc:
+            outcome='error'
+            trace_error('daemon','command-error',exc,phase=context[1])
             self.english_stats['errors']+=1
         finally:
             self.english_stats['latency_ms']=round((time.monotonic()-started)*1000)
+            trace('daemon','command-check',phase=context[1],outcome=outcome,engine=engine,personal_match=personal,
+                  preceding_silence=round(utterance.preceding_silence,2),seconds=round(len(utterance.pcm)/32000,2),
+                  latency_ms=self.english_stats['latency_ms'])
             self.english_busy=False
             self.publish(self.state,self.detail,self.mic)
 
@@ -819,6 +929,7 @@ class Listener:
             check_at = 0
             status_at = 0
             gate, personal_gate, gate_phase = SpeechGate(), PersonalSpeechGate(), self.phase
+            typing_gate=PersonalSpeechGate(tail=STOP_PAUSE,preroll_frames=2)
             while time.monotonic() < deadline:
                 now = time.monotonic()
                 if now >= check_at:
@@ -834,11 +945,14 @@ class Listener:
                                  "listening-for-stop-commands" if self.phase == "conversation" else "offline-hey-gpt-only", True)
                 if gate_phase != self.phase:
                     gate, personal_gate, gate_phase = SpeechGate(), PersonalSpeechGate(), self.phase
+                    typing_gate=PersonalSpeechGate(tail=STOP_PAUSE,preroll_frames=2)
                 activity = await asyncio.to_thread(self.vad.feed,data) if self.vad else None
                 voiced, utterance = gate.feed(data,voiced=activity)
                 english_voiced,english_utterance=voiced,utterance
                 if self.phase in {'wake','typing-recording'} and self.wav2vec and getattr(self.wav2vec,'typing_templates',None):
                     english_voiced,english_utterance=personal_gate.feed(data,voiced=activity)
+                if self.phase=='typing-recording':
+                    english_voiced,english_utterance=typing_gate.feed(data,voiced=activity)
                 self.audio_level = round(rms(data))
                 now = time.monotonic()
                 if now >= status_at:
@@ -848,6 +962,7 @@ class Listener:
                     ended=self.recording.feed(data,english_voiced)
                     if english_utterance and not english_utterance.too_long:self.submit_english(english_utterance,sid)
                     if ended and (not self.english_busy or self.recording.elapsed+1e-6>=MAX_SECONDS):self.finish_dictation()
+                    elif self.recording:self.maybe_preview_dictation()
                     continue
                 if self.phase.startswith('typing'):
                     continue
@@ -877,6 +992,7 @@ class Listener:
             self.detail = "cancelled"
             raise
         except Exception as exc:
+            trace_error('daemon','listener-error',exc,phase=self.phase)
             self.detail = str(exc) if str(exc) in {
                 "microphone-unavailable", "screen-locked-or-session-unavailable",
                 "browser-transition-timeout", "recognizers-unavailable"} else "model-or-audio-error"

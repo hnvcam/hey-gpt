@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 from audio_control import Utterance
-from dictation import Parakeet, Recording, command_match, keyboard_text, validate_settings, save_settings, load_settings
+from dictation import Parakeet, Recording, terminal_stop, command_match, keyboard_text, validate_settings, save_settings, load_settings
 import daemon
 from native_host import clean_message
 
@@ -17,6 +17,24 @@ def result(text, conf=.99):
 
 
 class AudioAndSettings(unittest.TestCase):
+    def test_final_stop_sentence_is_removed_but_mentions_are_preserved(self):
+        for phrase in ('End typing.','stop typing','Typing end!'):
+            self.assertEqual(terminal_stop('Keep this sentence. '+phrase)[0],'Keep this sentence.')
+            self.assertEqual(terminal_stop(phrase)[0],'')
+        for sentence in ('Please stop typing this word.','Explain how to end typing.',
+                         'Keep "end typing" in quotes.','End typing is a command.'):
+            self.assertEqual(terminal_stop(sentence),(sentence,None))
+
+    def test_recording_remembers_last_isolated_short_phrase(self):
+        record=Recording()
+        record.feed(b'a'*32000,True);record.feed(b'\0'*12800,False)
+        record.feed(b'c'*32000,True);record.feed(b'\0'*160000,False)
+        cut,pcm=record.stop_candidate()
+        self.assertEqual(cut,41600)
+        self.assertNotIn(b'a',pcm)
+        self.assertIn(b'c',pcm)
+        continuous=Recording();continuous.feed(b'a'*32000,True)
+        self.assertIsNone(continuous.stop_candidate())
     def test_silence_5_and_10_and_bounded_recording(self):
         for timeout in (5,10):
             record=Recording(timeout);record.feed(b'1'*3200,True)
@@ -147,6 +165,92 @@ class Lifecycle(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.listener.phase,'wake')
 
 
+class PreviewLifecycle(unittest.IsolatedAsyncioTestCase):
+    asyncSetUp=Lifecycle.asyncSetUp
+    asyncTearDown=Lifecycle.asyncTearDown
+
+    def recording(self):
+        self.listener.phase='typing-recording'
+        record=self.listener.recording=Recording()
+        record.feed(b'a'*160000,True)
+        return record
+
+    async def test_preview_waits_five_seconds_and_never_types(self):
+        listener=self.listener;record=self.recording()
+        record.elapsed=4.9
+        listener.maybe_preview_dictation()
+        self.assertIsNone(listener.preview_job)
+        record.elapsed=5.
+        with patch.object(listener,'ensure_keyboard',AsyncMock()) as keyboard:
+            listener.maybe_preview_dictation();await listener.preview_job
+            keyboard.assert_not_called()
+        self.assertEqual(listener.preview_text,'Hello world.')
+        self.assertEqual(listener.phase,'typing-recording')
+        self.assertEqual(listener.preview_revision,1)
+
+    async def test_later_chunk_rechecks_previous_audio_and_replaces_entire_draft(self):
+        listener=self.listener;record=self.recording()
+        listener.parakeet.transcribe.side_effect=['Their cat.', 'The cat is sleeping.']
+        listener.maybe_preview_dictation();await listener.preview_job
+        record.feed(b'b'*160000,True)
+        listener.maybe_preview_dictation();await listener.preview_job
+        calls=listener.parakeet.transcribe.await_args_list
+        self.assertEqual(calls[0].args[0],b'a'*160000)
+        self.assertEqual(calls[1].args[0],b'a'*160000+b'b'*160000)
+        self.assertEqual(listener.preview_text,'The cat is sleeping.')
+        self.assertEqual(listener.preview_revision,2)
+        self.assertNotIn('sleeping',json.dumps(listener.snapshot()))
+
+    async def test_preview_is_only_returned_to_local_requester(self):
+        listener=self.listener;listener.preview_text='Private draft.'
+        await listener.dispatch({'cmd':'dictation-preview'},self.writer)
+        reply=json.loads(self.writer.write.call_args.args[0])
+        self.assertEqual(reply,{'type':'dictation-preview','text':'Private draft.'})
+        listener.browser=self.writer;self.writer.reset_mock()
+        await listener.dispatch({'cmd':'dictation-preview'},self.writer)
+        self.assertNotIn('Private draft',str(self.writer.write.call_args_list))
+        with self.assertRaises(ValueError):clean_message({'cmd':'dictation-preview'})
+
+    async def test_final_waits_for_preview_then_types_corrected_text_once(self):
+        listener=self.listener;record=self.recording()
+        entered=asyncio.Event();release=asyncio.Event()
+        async def decode(pcm):
+            if not release.is_set():
+                entered.set();await release.wait();return 'Wrong draft.'
+            return 'Corrected final.'
+        listener.parakeet.transcribe.side_effect=decode
+        listener.maybe_preview_dictation();await entered.wait()
+        keyboard=Mock(returncode=None)
+        keyboard.stdin.drain=AsyncMock();keyboard.stdout.readline=AsyncMock(return_value=b'{"state":"typed"}\n')
+        listener.keyboard=keyboard
+        with patch.object(listener,'ensure_keyboard',AsyncMock()):
+            listener.finish_dictation();release.set();await listener.dictation_job
+        keyboard.stdin.write.assert_called_once()
+        self.assertEqual(json.loads(keyboard.stdin.write.call_args.args[0])['text'],'Corrected final.')
+        self.assertEqual(listener.preview_text,'')
+        self.assertEqual(listener.phase,'wake')
+        listener.keyboard=None
+
+    async def test_disable_cancels_preview_and_discards_draft(self):
+        listener=self.listener;self.recording();entered=asyncio.Event()
+        async def slow(_):entered.set();await asyncio.Event().wait()
+        listener.parakeet.transcribe.side_effect=slow
+        listener.preview_text='Earlier draft.'
+        listener.maybe_preview_dictation();await entered.wait()
+        await listener.disarm()
+        self.assertIsNone(listener.preview_job)
+        self.assertEqual(listener.preview_text,'')
+        self.assertFalse(listener.enabled)
+
+    async def test_final_stop_audio_is_removed_after_a_preview(self):
+        listener=self.listener;record=self.recording()
+        listener.maybe_preview_dictation();await listener.preview_job
+        record.feed(b'c'*32000,True)
+        with patch.object(listener,'transcribe_and_type',AsyncMock()) as final:
+            listener.finish_dictation(160000);await listener.dictation_job
+            self.assertEqual(final.await_args.args[0],b'a'*160000)
+
+
 class WorkerLifecycle(unittest.IsolatedAsyncioTestCase):
     def worker(self):
         proc=Mock(returncode=None)
@@ -173,6 +277,42 @@ class WorkerLifecycle(unittest.IsolatedAsyncioTestCase):
 class TriggerReliability(unittest.IsolatedAsyncioTestCase):
     asyncSetUp=Lifecycle.asyncSetUp
     asyncTearDown=Lifecycle.asyncTearDown
+    async def test_personal_false_match_cannot_override_full_sentence_transcripts(self):
+        self.listener.wav2vec=Mock(typing_templates=True)
+        self.listener.wav2vec.match_typing.return_value=True
+        self.listener.english=Mock();self.listener.english.decode.return_value=result('I am typing this sentence')
+        self.listener.parakeet.transcribe.return_value='I am typing this sentence.'
+        with patch.object(self.listener,'begin_dictation') as begin:
+            await self.listener.recognize_english(Utterance(b'x'*64000,1.2,500,False),'7',self.listener.recognition_context(),None)
+            begin.assert_not_called()
+        self.assertEqual(self.listener.english_stats['matches'],0)
+
+    async def test_end_typing_after_short_pause_is_a_command(self):
+        self.listener.phase='typing-recording';self.listener.recording=Recording()
+        self.listener.recording.feed(b'a'*32000,True)
+        self.listener.recording.feed(b'c'*32000,True)
+        self.listener.english=Mock();self.listener.english.decode.return_value=result('end typing')
+        with patch.object(self.listener,'transcribe_and_type',AsyncMock()) as finish:
+            await self.listener.recognize_english(Utterance(b'c'*32000,.4,500,False),'7',self.listener.recognition_context(),64000)
+            await self.listener.dictation_job
+            self.assertEqual(finish.await_args.args[0],b'a'*32000)
+
+    async def test_missed_tail_command_is_checked_and_removed_before_typing(self):
+        for phrase in ('End typing.','Stop typing.','Typing end.'):
+            listener=self.listener;listener.phase='typing-recording'
+            record=listener.recording=Recording()
+            record.feed(b'a'*32000,True);record.feed(b'\0'*12800,False)
+            record.feed(b'c'*32000,True);record.feed(b'\0'*160000,False)
+            listener.parakeet.transcribe.side_effect=[phrase,'Keep this.']
+            keyboard=Mock(returncode=None)
+            keyboard.stdin.drain=AsyncMock();keyboard.stdout.readline=AsyncMock(return_value=b'{"state":"typed"}\n')
+            listener.keyboard=keyboard
+            with patch.object(listener,'ensure_keyboard',AsyncMock()):
+                listener.finish_dictation();await listener.dictation_job
+            self.assertNotIn(b'c',listener.parakeet.transcribe.await_args.args[0])
+            self.assertEqual(json.loads(keyboard.stdin.write.call_args.args[0])['text'],'Keep this.')
+            self.assertEqual(listener.last_finish_reason,'spoken-command-final-check')
+            listener.keyboard=None
     async def test_parakeet_recovers_a_trigger_vosk_misheard(self):
         self.listener.english=Mock();self.listener.english.decode.return_value=result('type nice',.4)
         self.listener.parakeet.transcribe.return_value='Typing this.'

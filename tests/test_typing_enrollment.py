@@ -88,11 +88,17 @@ class PersonalRuntime(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         await self.listener.disarm();self.unlock.stop();self.env.stop();self.temp.cleanup()
     async def test_personal_trigger_works_with_parakeet_unloaded(self):
+        self.listener.english.decode.return_value={'text':'typing this','result':[{'conf':.99},{'conf':.99}]}
         with patch.object(self.listener,'begin_dictation') as begin:
             await self.listener.recognize_english(Utterance(b'x'*32000,1.5,500,False),'7',self.listener.recognition_context(),None)
             begin.assert_called_once()
-        self.listener.english.decode.assert_not_called();self.listener.parakeet.transcribe.assert_not_called()
+        self.listener.english.decode.assert_called_once();self.listener.parakeet.transcribe.assert_not_called()
         self.assertEqual(self.listener.english_stats['personal_matches'],1)
+    async def test_personal_similarity_without_spoken_command_cannot_start(self):
+        self.listener.english.decode.return_value={'text':'something else','result':[{'conf':.99},{'conf':.99}]}
+        with patch.object(self.listener,'begin_dictation') as begin:
+            await self.listener.recognize_english(Utterance(b'x'*32000,1.5,500,False),'7',self.listener.recognition_context(),None)
+            begin.assert_not_called()
     async def test_all_requested_stop_aliases_are_supported(self):
         self.assertEqual(ENGLISH_STOPS,{'stop typing','end typing','typing end'})
     async def test_personal_stop_still_needs_a_pause(self):

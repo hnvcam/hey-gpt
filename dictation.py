@@ -46,6 +46,14 @@ def save_settings(value):
 
 ENGLISH_TRIGGERS = frozenset({'typing this', 'type this'})
 ENGLISH_STOPS = frozenset({'stop typing','end typing','typing end'})
+STOP_PAUSE = .35
+
+
+def terminal_stop(text):
+    """A final command sentence, never a phrase inside an ordinary sentence."""
+    pattern=r'(?:^|(?<=[.!?])\s+)(stop typing|end typing|typing end)[.!?\s]*$'
+    match=re.search(pattern,text,re.IGNORECASE)
+    return (text[:match.start()].rstrip(),match.group(1).lower()) if match else (text,None)
 
 
 def command_text(text):
@@ -81,7 +89,10 @@ class Recording:
     def __init__(self, silence_seconds=5):
         self.silence_seconds=silence_seconds
         self.audio=bytearray();self.quiet=0.;self.elapsed=0.;self.spoke=False;self.first_speech=None
+        self.last_speech_start=None;self.last_pause=0.
     def feed(self, pcm, voiced):
+        if voiced and (self.last_speech_start is None or self.quiet+1e-6>=STOP_PAUSE):
+            self.last_speech_start=len(self.audio);self.last_pause=self.quiet
         if voiced and self.first_speech is None:self.first_speech=len(self.audio)
         remaining=MAX_SECONDS*RATE_BYTES-len(self.audio)
         self.audio.extend(pcm[:max(0,remaining)])
@@ -89,6 +100,14 @@ class Recording:
         self.quiet=0. if voiced else self.quiet+dt
         self.spoke=self.spoke or voiced
         return self.quiet+1e-6>=self.silence_seconds or self.elapsed+1e-6>=MAX_SECONDS
+
+    def stop_candidate(self):
+        """Final isolated short phrase, retained for a missed/busy stop check."""
+        if self.last_speech_start is None or self.last_pause+1e-6<STOP_PAUSE:return None
+        speech_end=len(self.audio)-round(self.quiet*RATE_BYTES)
+        if not 0<speech_end-self.last_speech_start<=6*RATE_BYTES:return None
+        cut=max(0,self.last_speech_start-3200)
+        return cut,bytes(self.audio[cut:min(len(self.audio),speech_end+12800)])
     def take(self, end=None):
         audio=bytes(self.audio if end is None else self.audio[:max(0,end)])
         self.audio.clear()

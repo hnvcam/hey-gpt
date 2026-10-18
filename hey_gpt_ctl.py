@@ -5,12 +5,18 @@ import json
 import os
 from pathlib import Path
 import socket
+import subprocess
 
 parser = argparse.ArgumentParser()
-parser.add_argument("command", choices=("status", "enable", "disable", "disarm", "wake", "typing", "model-load", "model-unload", "dictation-settings", "reload-typing-templates"), default="status", nargs="?")
+parser.add_argument("command", choices=("status", "enable", "disable", "disarm", "wake", "typing", "model-load", "model-unload", "dictation-settings", "reload-typing-templates", "logs"), default="status", nargs="?")
 parser.add_argument('--autoload',choices=('on','off'))
 parser.add_argument('--silence',type=int)
+parser.add_argument('--follow',action='store_true',help='Follow local diagnostic logs')
 args = parser.parse_args()
+if args.command=='logs':
+    cmd=['journalctl','--user','-u','hey-gpt.service','-u','hey-gpt-tray.service','--no-pager','-n','200']
+    if args.follow:cmd.append('--follow')
+    raise SystemExit(subprocess.call(cmd))
 path = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")) / "hey-gpt/control.sock"
 try:
     with socket.socket(socket.AF_UNIX) as sock:
