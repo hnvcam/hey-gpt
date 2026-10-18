@@ -62,7 +62,8 @@ three-minute limit), so the model has the previous speech as context and can
 correct earlier wording. The input field is left alone until the final pass:
 the finished text is typed once and remains unsent. The board does not request
 keyboard focus; keep the destination field focused throughout dictation.
-The current draft is also available in the tray dropdown. On COSMIC, the board
+Enable or hide the board in **Cài đặt → Hiện bảng văn bản khi nhập giọng nói**.
+The tray menu contains only assistant on/off, Open ChatGPT and Settings. On COSMIC, the board
 follows the output configured for the panel containing the status area, even
 when another monitor is marked primary. If that panel/output is unavailable,
 it falls back to the primary monitor. Xwayland places the popup below the panel
@@ -73,12 +74,25 @@ screen lock and Unload clear the draft.
 
 ## Model controls
 
-The tray's control panel has **Load model**, **Unload · free GPU memory** and
-**Load dictation model when the agent starts** (on by default). Unload terminates
-the separate GPU worker, releasing its VRAM. The small English Vosk command
-detector remains on CPU so “typing this” can load Parakeet again. Wait for the
-ready sound before speaking, especially after Unload. Changing the startup toggle
-only changes the next start; use Unload to release memory immediately.
+Open **Cài đặt…** from the tray menu. All model controls and preferences live here:
+**Nạp bộ nhập tiếng Anh**, **Nạp sẵn bộ nhập tiếng Anh khi khởi động**,
+**Hiện bảng văn bản khi nhập giọng nói**, the silence timeout, and
+**Giải phóng bộ nhớ GPU**. Transcript visibility defaults to on and is saved
+alongside the other dictation preferences. The board appears automatically during
+recording; it is not an unavailable menu action while idle.
+
+**Giải phóng bộ nhớ GPU** pauses local listening, requests the end of active Chrome
+Voice, cancels dictation and terminates both GPU workers: Parakeet and Vietnamese
+Wav2Vec2/Silero. It stays available while the service is connected; repeating it
+when the models are already unloaded is harmless. The status says **Đã giải phóng
+GPU**. Turn the assistant on to reload wake listening. English Vosk stays loaded
+on CPU and can confirm “typing this” to load Parakeet after listening resumes.
+Changing the startup preference affects the next service start.
+
+**Chi tiết bộ nhận giọng** lists each active component accurately: Vietnamese
+Wav2Vec2 on GPU for wake/stop phrases; English Vosk on CPU for dictation commands;
+Parakeet on GPU for English transcription; and Silero on GPU for speech activity.
+The obsolete Vietnamese Vosk branch has been removed. English Vosk remains in use.
 
 ## Local controls
 

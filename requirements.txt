@@ -1,8 +1,7 @@
-# Current CUDA recognizer; install torch separately using the CUDA index in README.
-# Versions match the working local environment. Vosk is not used by the service.
+# GPU models for Vietnamese recognition. Install CUDA torch separately.
 numpy==2.5.4
 transformers==4.57.6
 huggingface-hub==0.36.2
 
-# Lightweight English wake/stop command detection while Parakeet is unloaded.
+# Active CPU detector for English typing commands, including when Parakeet is unloaded.
 vosk==0.3.45

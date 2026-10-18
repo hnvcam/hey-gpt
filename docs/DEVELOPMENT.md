@@ -13,7 +13,7 @@ from there. Rerun `install.py` after relocating the project.
 | Component | Files/directories |
 | --- | --- |
 | Service, microphone coordination, conversation state | `daemon.py`, `audio_control.py`, `conversation_idle.py` |
-| Vietnamese recognition and acoustic matching | `wav2vec_recognizer.py`, `voice_activity.py`, `wake_words.py`, `acoustic_keywords.py` |
+| Vietnamese recognition and acoustic matching | `wake_worker.py`, `wav2vec_recognizer.py`, `voice_activity.py`, `wake_words.py`, `acoustic_keywords.py` |
 | English dictation and keyboard insertion | `dictation.py`, `parakeet_worker.py`, `keyboard_input.py` |
 | Local controls and Chrome bridge | `hey_gpt_ctl.py`, `native_host.py` |
 | Desktop indicator, draft board, and diagnostics | `tray.py`, `tray_status.py`, `tray_position.py`, `diagnostics.py`, `icons/` |
@@ -56,6 +56,14 @@ Run from the project root:
 python3 -m unittest discover -s tests -v
 node tests/page.test.cjs
 node tests/background.test.cjs
+```
+
+For the GTK menu and settings checks, use a virtual display and the system Python
+with PyGObject installed. These use actual widgets with simulated service data,
+without recording a microphone or changing the running app:
+
+```bash
+PYTHONPATH="$PWD" HEY_GPT_TEST_GTK=1 xvfb-run -a /usr/bin/python3 -m unittest discover -s tests -p test_tray_ui.py -v
 ```
 
 For the additional JavaScript suites:

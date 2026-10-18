@@ -102,8 +102,8 @@ def ctc_words(ids, scores, tokenizer, blank_id):
 
 class Wav2VecVietnamese:
     def __init__(self, model_path, gpu_uuid=None):
-        # Imports are intentionally lazy: Vosk still works if this optional
-        # dependency/model has not been installed. Nothing downloads at runtime.
+        # Imports are lazy so the control service works without GPU dependencies.
+        # Nothing downloads at runtime.
         path = Path(model_path)
         self.model_path = path
         if not (path / 'config.json').is_file():

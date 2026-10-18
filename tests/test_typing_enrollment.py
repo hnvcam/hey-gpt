@@ -79,7 +79,7 @@ class Enrollment(unittest.TestCase):
 class PersonalRuntime(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temp=tempfile.TemporaryDirectory();self.env=patch.dict(os.environ,{'XDG_RUNTIME_DIR':self.temp.name});self.env.start()
-        self.listener=Listener(Path('unused'));self.listener.enabled=self.listener.mic=True
+        self.listener=Listener();self.listener.enabled=self.listener.mic=True
         self.listener.wav2vec=Mock(typing_templates=True);self.listener.wav2vec.match_typing.return_value=True
         self.listener.english=Mock()
         self.listener.parakeet=Mock(state='unloaded',error=None)

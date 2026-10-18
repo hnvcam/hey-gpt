@@ -23,7 +23,7 @@ SOCKET=Path(os.environ.get('XDG_RUNTIME_DIR',f'/run/user/{os.getuid()}'))/'hey-g
 
 def exchange(cmd, payload=None):
     with socket.socket(socket.AF_UNIX) as sock:
-        sock.settimeout(2)
+        sock.settimeout(10 if cmd=='model-unload' else 2)
         sock.connect(str(SOCKET))
         reader=sock.makefile('rb')
         first=json.loads(reader.readline())
@@ -33,6 +33,8 @@ def exchange(cmd, payload=None):
             line=reader.readline()
             if not line: break
             msg=json.loads(line)
+            if msg.get('type')=='error':raise RuntimeError('control-request-failed')
+            if msg.get('type')=='status':first=msg
             if cmd=='dictation-preview' and msg.get('type')=='dictation-preview':
                 return {**first,'preview_text':msg.get('text','')}
             if msg.get('type')=='ack': return first
@@ -42,30 +44,23 @@ def exchange(cmd, payload=None):
 class App:
     def __init__(self):
         self.status=None;self.busy=False;self.window=None;self.board=None;self.board_display=None
+        self.action_error=None
         self.connection_failed=False;self.board_placement=None
         self.indicator=Indicator.Indicator.new('hey-gpt',str(ROOT/'icons/off.png'),Indicator.IndicatorCategory.APPLICATION_STATUS)
         self.indicator.set_status(Indicator.IndicatorStatus.ACTIVE)
         self.indicator.set_title('Hey GPT')
-        self.indicator.set_label('GPT · Starting','GPT · Listening')
-        menu=Gtk.Menu()
+        self.indicator.set_label('GPT · Đang mở','GPT · Đang nghe')
+        menu=self.menu=Gtk.Menu()
         self.header=Gtk.MenuItem(label='Hey GPT · đang kiểm tra');self.header.set_sensitive(False);menu.append(self.header)
-        self.menu_preview=Gtk.MenuItem();self.menu_preview.set_sensitive(False)
-        self.menu_preview_label=Gtk.Label();self.menu_preview_label.set_xalign(0)
-        self.menu_preview_label.set_line_wrap(True);self.menu_preview_label.set_max_width_chars(54)
-        self.menu_preview.add(self.menu_preview_label);menu.append(self.menu_preview)
         menu.append(Gtk.SeparatorMenuItem())
-        self.on=self.item(menu,'Bật trợ lý · chờ “Hey GPT”',lambda *_:self.action('enable'))
-        self.off=self.item(menu,'Tắt trợ lý và kết thúc Voice',lambda *_:self.action('disable'))
-        self.item(menu,'Load English dictation model',lambda *_:self.action('model-load'))
-        self.item(menu,'Unload model · free GPU memory',lambda *_:self.action('model-unload'))
-        self.board_item=self.item(menu,'Show transcript board',lambda *_:self.show_board())
-        self.board_item.set_sensitive(False)
-        self.item(menu,'Mở bảng điều khiển',lambda *_:self.show_window())
-        self.item(menu,'Mở ChatGPT trên Chrome',lambda *_:self.open_chat())
-        self.item(menu,'Thiết lập tiện ích Chrome…',lambda *_:self.show_window(setup=True))
+        self.updating_menu=False
+        self.enabled_item=Gtk.CheckMenuItem(label='Bật trợ lý')
+        self.enabled_item.connect('toggled',self.toggle_assistant);menu.append(self.enabled_item)
+        self.item(menu,'Mở ChatGPT',lambda *_:self.open_chat())
+        self.item(menu,'Cài đặt…',lambda *_:self.show_window())
         menu.append(Gtk.SeparatorMenuItem())
         self.item(menu,'Ẩn biểu tượng (không tắt trợ lý)',lambda *_:Gtk.main_quit())
-        menu.show_all();self.menu_preview.hide();self.indicator.set_menu(menu)
+        menu.show_all();self.indicator.set_menu(menu)
         GLib.timeout_add_seconds(1,self.poll);self.poll()
 
     def item(self,menu,label,handler):
@@ -74,12 +69,27 @@ class App:
     def open_chat(self):
         subprocess.Popen(['google-chrome','https://chatgpt.com/'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
 
+    def toggle_assistant(self,item):
+        if not self.updating_menu:
+            self.action('enable' if item.get_active() else 'disable')
+
     def action(self,cmd,payload=None):
         def run():
+            error=None
             try:exchange(cmd,payload)
-            except (OSError,ValueError) as exc:trace_error('tray','control-error',exc,command=cmd)
-            GLib.idle_add(self.poll)
+            except (OSError,ValueError,RuntimeError) as exc:
+                trace_error('tray','control-error',exc,command=cmd)
+                error='Không thực hiện được thao tác. Hãy kiểm tra kết nối dịch vụ.'
+            GLib.idle_add(self.action_finished,error)
         threading.Thread(target=run,daemon=True).start()
+
+    def action_finished(self,error):
+        self.action_error=error
+        if self.window:
+            self.feedback.set_text(error or '')
+            self.feedback.set_visible(bool(error))
+        self.poll()
+        return False
 
     def poll(self):
         if self.busy:return True
@@ -100,15 +110,16 @@ class App:
         self.busy=False;self.status=status
         color,text=display(status)
         self.indicator.set_icon_full(str(ROOT/f'icons/{color}.png'),text)
-        self.indicator.set_label(panel_label(status),'GPT · Listening')
+        self.indicator.set_label(panel_label(status),'GPT · Đang nghe')
         self.header.set_label(text)
-        self.on.set_sensitive(bool(status))
-        self.off.set_sensitive(bool(status))
+        self.updating_menu=True
+        self.enabled_item.set_active(bool(status and status.get('enabled')))
+        self.enabled_item.set_sensitive(bool(status))
+        self.updating_menu=False
         self.update_board(status)
         if self.window:
             self.status_label.set_text(text)
             self.engines_label.set_text(recognizer_text(status))
-            self.on_button.set_sensitive(bool(status))
             self.update_dictation(status)
         return False
 
@@ -124,24 +135,24 @@ class App:
         board=Gtk.Window(type=Gtk.WindowType.POPUP if popup else Gtk.WindowType.TOPLEVEL)
         if self.board_display:board.set_screen(self.board_display.get_default_screen())
         self.board=board
-        board.set_title('Hey GPT · Transcript')
+        board.set_title('Hey GPT · Văn bản đang nhập')
         board.set_default_size(440,220);board.set_border_width(16)
         board.set_resizable(False);board.set_keep_above(True)
         board.set_accept_focus(False);board.set_focus_on_map(False)
         board.set_skip_taskbar_hint(True);board.set_skip_pager_hint(True)
         board.set_type_hint(Gdk.WindowTypeHint.UTILITY)
         box=Gtk.Box(orientation=Gtk.Orientation.VERTICAL,spacing=10);board.add(box)
-        self.board_heading=Gtk.Label(label='Hey GPT · Dictation');self.board_heading.set_xalign(0)
+        self.board_heading=Gtk.Label(label='Hey GPT · Nhập giọng nói');self.board_heading.set_xalign(0)
         box.pack_start(self.board_heading,False,False,0)
         scroll=Gtk.ScrolledWindow();scroll.set_policy(Gtk.PolicyType.NEVER,Gtk.PolicyType.AUTOMATIC)
         scroll.set_min_content_height(120);scroll.set_max_content_height(320)
         box.pack_start(scroll,True,True,0)
-        self.board_text=Gtk.Label(label='Say “typing this” and wait for the ready sound.')
+        self.board_text=Gtk.Label(label='Nói “typing this” và chờ âm báo.')
         self.board_text.set_xalign(0);self.board_text.set_yalign(0)
         self.board_text.set_line_wrap(True);self.board_text.set_line_wrap_mode(Pango.WrapMode.WORD_CHAR)
         self.board_text.set_max_width_chars(54)
         scroll.add(self.board_text)
-        note=Gtk.Label(label='Draft updates every ~5 s · earlier words may change.\nFinish: pause, say “end typing” or “stop typing”.\nThe finished text is typed once. Press Enter yourself.')
+        note=Gtk.Label(label='Bản nháp cập nhật mỗi 5 giây và có thể thay đổi.\nNói riêng “stop typing” để kết thúc.\nVăn bản được gõ một lần; bạn tự nhấn Enter.')
         note.set_xalign(0);box.pack_start(note,False,False,0)
         board.connect('delete-event',self.hide_board)
         monitors=[]
@@ -174,80 +185,106 @@ class App:
     def update_board(self,status):
         phase=(status or {}).get('dictation',{}).get('phase','idle')
         active=phase.startswith('typing')
-        self.board_item.set_sensitive(active)
-        self.menu_preview.set_visible(active)
-        preview=(status or {}).get('preview_text','')
-        self.menu_preview_label.set_text((preview[-400:] if len(preview)>400 else preview) or 'Preparing the transcript…')
+        visible=(status or {}).get('dictation',{}).get('settings',{}).get('show_transcript',True)
         # Loading alone is not a recording. Show the board only after the
         # intentional trigger has completed preparation and the cue has played.
-        if phase=='typing-recording' and not self.board:self.show_board()
-        if not active:
+        if phase=='typing-recording' and visible and not self.board:self.show_board()
+        if not active or not visible:
             self.hide_board();return
         if not self.board:return
         info=status.get('dictation',{})
         seconds=info.get('recorded_seconds',0)
-        title={'typing-loading':'Preparing model…','typing-recording':f'Dictating · {seconds:.0f} s',
-               'typing-transcribing':'Finalizing transcript…','typing-inserting':'Typing finished text…'}
-        if info.get('preview_busy') and phase=='typing-recording':title[phase]+= ' · Updating…'
+        title={'typing-loading':'Đang chuẩn bị…','typing-recording':f'Đang nghe · {seconds:.0f} giây',
+               'typing-transcribing':'Đang hoàn thiện văn bản…','typing-inserting':'Đang gõ văn bản…'}
+        if info.get('preview_busy') and phase=='typing-recording':title[phase]+= ' · Đang cập nhật…'
         self.board_heading.set_text('Hey GPT · '+title.get(phase,phase))
-        self.board_text.set_text(status.get('preview_text') or 'Waiting for the first five seconds of speech…')
+        self.board_text.set_text(status.get('preview_text') or 'Văn bản sẽ xuất hiện sau khoảng 5 giây nói…')
 
     def update_dictation(self,status):
         info=(status or {}).get('dictation',{})
         model=info.get('state','unavailable')
-        self.dictation_label.set_text('English dictation · Parakeet v2 · RTX 4060\nModel: '+model+
-            (' · '+info['error'] if info.get('error') else ''))
-        self.load_button.set_sensitive(bool(status) and model not in {'loading','ready','transcribing'})
-        self.unload_button.set_sensitive(bool(status) and model!='unloaded')
+        labels={'ready':'Sẵn sàng nhập tiếng Anh', 'unloaded':'Chưa nạp bộ nhập tiếng Anh',
+                'loading':'Đang nạp bộ nhập tiếng Anh…', 'transcribing':'Đang chuyển giọng nói thành văn bản…'}
+        self.dictation_label.set_text('Không kết nối được dịch vụ' if not status else
+            'Lỗi nhập giọng nói · xem phần Chi tiết' if info.get('error') else labels.get(model,'Bộ nhập tiếng Anh chưa sẵn sàng'))
+        self.load_button.set_visible(bool(status) and model not in {'loading','ready','transcribing'})
+        self.unload_button.set_sensitive(bool(status))
+        self.gpu_note.set_text('Bộ nhớ GPU đã được giải phóng.' if (status or {}).get('detail')=='models-unloaded'
+                              else 'Tạm dừng trợ lý, kết thúc Voice và gỡ toàn bộ mô hình khỏi GPU.')
         settings=info.get('settings',{'autoload':True,'silence_seconds':5})
         self.updating_settings=True
         self.autoload.set_active(settings['autoload'])
         self.silence.set_value(settings['silence_seconds'])
+        self.transcript.set_active(settings.get('show_transcript',True))
+        for widget in (self.autoload,self.silence,self.transcript):widget.set_sensitive(bool(status))
         self.updating_settings=False
 
     def dictation_settings_changed(self,*args):
         if self.updating_settings:return
         self.action('dictation-settings',{'settings':{'autoload':self.autoload.get_active(),
-                                                     'silence_seconds':self.silence.get_value_as_int()}})
+                                                     'silence_seconds':self.silence.get_value_as_int(),
+                                                     'show_transcript':self.transcript.get_active()}})
 
-    def show_window(self,setup=False):
+    @staticmethod
+    def note(box,text):
+        label=Gtk.Label(label=text);label.set_xalign(0);label.set_line_wrap(True)
+        label.set_max_width_chars(58);box.pack_start(label,False,False,0)
+        return label
+
+    @staticmethod
+    def section(box,title):
+        frame=Gtk.Frame(label=title)
+        content=Gtk.Box(orientation=Gtk.Orientation.VERTICAL,spacing=10)
+        content.set_border_width(14);frame.add(content);box.pack_start(frame,False,False,0)
+        return content
+
+    def show_window(self):
         if self.window:
             self.window.present();return
-        win=Gtk.Window(title='Hey GPT · Trợ lý tiếng Việt');self.window=win
-        win.set_default_size(560,720);win.set_border_width(22)
+        win=Gtk.Window(title='Hey GPT · Cài đặt');self.window=win
+        win.set_default_size(520,620);win.set_border_width(18)
         win.connect('destroy',lambda *_:setattr(self,'window',None))
         scroll=Gtk.ScrolledWindow();scroll.set_policy(Gtk.PolicyType.NEVER,Gtk.PolicyType.AUTOMATIC);win.add(scroll)
-        box=Gtk.Box(orientation=Gtk.Orientation.VERTICAL,spacing=14);scroll.add(box)
-        heading=Gtk.Label();heading.set_markup('<span size="xx-large" weight="bold">Hey GPT</span>');heading.set_xalign(0);box.pack_start(heading,False,False,0)
-        self.status_label=Gtk.Label(label=display(self.status)[1]);self.status_label.set_xalign(0);self.status_label.set_line_wrap(True);box.pack_start(self.status_label,False,False,0)
-        self.engines_label=Gtk.Label(label=recognizer_text(self.status));self.engines_label.set_xalign(0);self.engines_label.set_line_wrap(True);box.pack_start(self.engines_label,False,False,0)
-        self.on_button=Gtk.Button(label='BẬT · chờ “Hey GPT”');self.on_button.connect('clicked',lambda *_:self.action('enable'));box.pack_start(self.on_button,False,False,0)
-        off=Gtk.Button(label='TẮT · đóng micro local, kết thúc Voice');off.connect('clicked',lambda *_:self.action('disable'));box.pack_start(off,False,False,0)
-        self.on_button.set_sensitive(bool(self.status))
-        self.dictation_label=Gtk.Label();self.dictation_label.set_xalign(0);self.dictation_label.set_line_wrap(True)
-        box.pack_start(self.dictation_label,False,False,0)
-        controls=Gtk.Box(spacing=8);box.pack_start(controls,False,False,0)
-        self.load_button=Gtk.Button(label='Load model');self.load_button.connect('clicked',lambda *_:self.action('model-load'));controls.pack_start(self.load_button,True,True,0)
-        self.unload_button=Gtk.Button(label='Unload · free GPU memory');self.unload_button.connect('clicked',lambda *_:self.action('model-unload'));controls.pack_start(self.unload_button,True,True,0)
+        box=Gtk.Box(orientation=Gtk.Orientation.VERTICAL,spacing=16);scroll.add(box)
+        self.status_label=self.note(box,display(self.status)[1])
+        self.feedback=self.note(box,self.action_error or '')
+
+        typing=self.section(box,'Nhập giọng nói tiếng Anh')
+        self.dictation_label=self.note(typing,'')
+        self.load_button=Gtk.Button(label='Nạp bộ nhập tiếng Anh')
+        self.load_button.connect('clicked',lambda *_:self.action('model-load'))
+        typing.pack_start(self.load_button,False,False,0)
         self.updating_settings=True
-        self.autoload=Gtk.CheckButton(label='Load dictation model when the agent starts')
-        self.autoload.connect('toggled',self.dictation_settings_changed);box.pack_start(self.autoload,False,False,0)
-        row=Gtk.Box(spacing=8);box.pack_start(row,False,False,0)
-        row.pack_start(Gtk.Label(label='Finish after silence (seconds):'),False,False,0)
-        self.silence=Gtk.SpinButton.new_with_range(2,30,1);self.silence.connect('value-changed',self.dictation_settings_changed);row.pack_start(self.silence,False,False,0)
-        self.update_dictation(self.status)
-        note=Gtk.Label(label='Say “typing this”, wait for the sound, then dictate in English.\nA transcript board updates about every five seconds. Say “stop typing” by itself after a short pause, or stay silent for the time above. The finished text is typed once. Keep the original field focused; press Enter yourself. Use a US English keyboard layout.')
-        note.set_xalign(0);note.set_line_wrap(True);box.pack_start(note,False,False,0)
-        help_text=('ChatGPT trên Chrome là bên trả lời. Bộ nghe local hoạt động liên tục khi trợ lý bật.\n'
-                   'Nghỉ khoảng 1 giây rồi nói riêng “hết”, “kết thúc”, “dừng lại” hoặc “done”; '
-                   'hoặc im lặng 15 giây: tự đóng Voice và chờ “Hey GPT” tiếp. Không cần tìm Chrome bấm kết thúc.\n\n'
-                   'Lần đầu: mở chrome://extensions → Developer mode → Load unpacked, chọn thư mục bên dưới. '
-                   'Đăng nhập và cấp quyền micro một lần. Sau đó chỉ cần nói “Hey GPT”, '
-                   'đợi âm báo hai nốt rồi đặt câu hỏi; Chrome sẽ tự mở khi cần.')
-        note=Gtk.Label(label=help_text);note.set_xalign(0);note.set_line_wrap(True);box.pack_start(note,False,False,0)
-        folder=Gtk.Entry();folder.set_text(str(ROOT/'extension'));folder.set_editable(False);box.pack_start(folder,False,False,0)
-        warning=Gtk.Label(label='TẮT chỉ yêu cầu kết thúc Voice ở tab đã gắn. Nếu mất kết nối, hãy kiểm tra micro trong Chrome.');warning.set_line_wrap(True);warning.set_xalign(0);box.pack_start(warning,False,False,0)
-        win.show_all();win.present()
+        self.autoload=Gtk.CheckButton(label='Nạp sẵn bộ nhập tiếng Anh khi khởi động')
+        self.autoload.connect('toggled',self.dictation_settings_changed);typing.pack_start(self.autoload,False,False,0)
+        self.transcript=Gtk.CheckButton(label='Hiện bảng văn bản khi nhập giọng nói')
+        self.transcript.connect('toggled',self.dictation_settings_changed);typing.pack_start(self.transcript,False,False,0)
+        row=Gtk.Box(spacing=10);typing.pack_start(row,False,False,0)
+        row.pack_start(Gtk.Label(label='Kết thúc sau khoảng im lặng:'),False,False,0)
+        self.silence=Gtk.SpinButton.new_with_range(2,30,1)
+        self.silence.connect('value-changed',self.dictation_settings_changed);row.pack_start(self.silence,False,False,0)
+        row.pack_start(Gtk.Label(label='giây'),False,False,0)
+
+        gpu=self.section(box,'Bộ nhớ GPU')
+        self.unload_button=Gtk.Button(label='Giải phóng bộ nhớ GPU')
+        self.unload_button.connect('clicked',lambda *_:self.action('model-unload'));gpu.pack_start(self.unload_button,False,False,0)
+        self.gpu_note=self.note(gpu,'')
+        self.note(gpu,'Bật lại trợ lý từ menu để tiếp tục nghe.')
+
+        help=Gtk.Expander(label='Cách sử dụng và kết nối Chrome')
+        help_box=Gtk.Box(orientation=Gtk.Orientation.VERTICAL,spacing=10);help_box.set_border_width(10);help.add(help_box)
+        self.note(help_box,'Gọi “Hey GPT” để mở Voice. Nói riêng “hết”, “kết thúc”, “dừng lại” hoặc “done” sau một nhịp nghỉ để kết thúc.')
+        self.note(help_box,'Nhập văn bản: nói “typing this”, chờ âm báo rồi nói tiếng Anh. Nói riêng “stop typing” để kết thúc. Giữ ô cần nhập được chọn, dùng bàn phím US; bạn tự nhấn Enter.')
+        self.note(help_box,'Lần đầu: mở chrome://extensions → Developer mode → Load unpacked, chọn thư mục bên dưới. Đăng nhập ChatGPT và cấp quyền micro.')
+        folder=Gtk.Entry();folder.set_text(str(ROOT/'extension'));folder.set_editable(False);help_box.pack_start(folder,False,False,0)
+        box.pack_start(help,False,False,0)
+
+        details=Gtk.Expander(label='Chi tiết bộ nhận giọng')
+        detail_box=Gtk.Box(orientation=Gtk.Orientation.VERTICAL,spacing=8);detail_box.set_border_width(10);details.add(detail_box)
+        self.engines_label=self.note(detail_box,recognizer_text(self.status))
+        box.pack_start(details,False,False,0)
+        win.show_all();self.feedback.set_visible(bool(self.action_error))
+        self.update_dictation(self.status);win.present()
 
 
 if __name__=='__main__':

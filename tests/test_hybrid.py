@@ -45,12 +45,12 @@ class CTC(unittest.TestCase):
         self.assertFalse(wake_match(result('hey gpt', float('nan'))))
 
 
-class ParallelRecognition(unittest.IsolatedAsyncioTestCase):
+class RecognitionLifecycle(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.env = patch.dict(os.environ, {'XDG_RUNTIME_DIR':self.temp.name})
         self.env.start()
-        self.listener = Listener(Path('missing'))
+        self.listener = Listener()
         self.listener.enabled = self.listener.mic = True
         self.listener.phase_since = 100
         self.writer = Mock()
@@ -73,17 +73,17 @@ class ParallelRecognition(unittest.IsolatedAsyncioTestCase):
     async def drain(self):
         await asyncio.gather(*list(self.listener.recognition_jobs))
 
-    async def test_either_engine_can_trigger_without_the_other(self):
+    async def test_vietnamese_recognizer_triggers_a_wake(self):
         context = self.listener.recognition_context()
-        await self.listener.recognize('vosk', lambda _: result('không khớp'),
+        await self.listener.recognize('wav2vec2', lambda _: result('không khớp'),
                                       self.utterance, self.writer, '7', context)
         await self.listener.recognize('wav2vec2', lambda _: result('hey gpt'),
                                       self.utterance, self.writer, '7', context)
         self.assertEqual(len(self.actions('wake')), 1)
         self.assertEqual(self.listener.last_recognizer, 'wav2vec2')
 
-    async def test_both_match_emit_only_one_wake(self):
-        self.listener.submit_recognition('vosk', lambda _: result('hây gi pi ti'), self.utterance,self.writer,'7')
+    async def test_duplicate_utterances_emit_only_one_wake(self):
+        self.listener.submit_recognition('wav2vec2', lambda _: result('hây gi pi ti'), self.utterance,self.writer,'7')
         self.listener.submit_recognition('wav2vec2', lambda _: result('hey gpt'), self.utterance,self.writer,'7')
         await self.drain()
         self.assertEqual(len(self.actions('wake')), 1)
@@ -101,11 +101,11 @@ class ParallelRecognition(unittest.IsolatedAsyncioTestCase):
             # No queued duplicate audio, no blocking the event loop.
             self.listener.submit_recognition('wav2vec2',slow,self.utterance,self.writer,'7')
             self.assertEqual(self.listener.engines['wav2vec2']['skipped'], 1)
-            self.listener.submit_recognition('vosk',lambda _:result('hây gi pi ti'),self.utterance,self.writer,'7')
-            for _ in range(100):
-                if self.listener.phase == 'opening': break
-                await asyncio.sleep(.005)
-            self.assertEqual(len(self.actions('wake')), 1)
+            heartbeat=Mock()
+            asyncio.get_running_loop().call_soon(heartbeat)
+            await asyncio.sleep(.005)
+            heartbeat.assert_called_once()
+            self.assertEqual(self.actions('wake'), [])
         finally:
             release.set()
         await self.drain()
@@ -118,7 +118,7 @@ class ParallelRecognition(unittest.IsolatedAsyncioTestCase):
         await self.listener.recognize('wav2vec2',lambda _:result('hey gpt'),self.utterance,self.writer,'7',context)
         self.assertEqual(self.actions('wake'), [])
 
-    async def test_stop_requires_whole_utterance_and_pause_on_either_engine(self):
+    async def test_stop_requires_whole_utterance_and_pause(self):
         self.listener.phase = 'conversation'
         self.listener.session = 'session-token'
         self.listener.voice_events={'playback_state':'quiet'}
@@ -129,24 +129,23 @@ class ParallelRecognition(unittest.IsolatedAsyncioTestCase):
         await self.listener.recognize('wav2vec2',lambda _:result('hết'),short,self.writer,'7',context)
         self.assertEqual(self.actions('stop'), [])
         self.listener.submit_recognition('wav2vec2',lambda _:result('hết'),self.utterance,self.writer,'7')
-        self.listener.submit_recognition('vosk',lambda _:result('hết'),self.utterance,self.writer,'7')
         await self.drain()
         self.assertEqual(len(self.actions('stop')), 1)
 
     async def test_model_missing_visible_not_silently_claimed_as_ready(self):
-        with patch('daemon.Wav2VecVietnamese', side_effect=FileNotFoundError):
+        with patch('daemon.WakeModels') as worker:
+            worker.return_value.load.side_effect=RuntimeError('model-missing')
             await self.listener.prepare_wav2vec()
         self.assertEqual(self.listener.snapshot()['recognizers']['wav2vec2']['state'], 'model-missing')
         self.assertTrue(self.listener.enabled)
 
-    async def test_branch_failure_preserves_other_engine(self):
+    async def test_failed_recognition_never_operates_browser(self):
         def broken(_): raise RuntimeError('private transcript must not be logged')
         context = self.listener.recognition_context()
         await self.listener.recognize('wav2vec2',broken,self.utterance,self.writer,'7',context)
         self.assertEqual(self.listener.engines['wav2vec2']['state'], 'decode-error')
         self.assertTrue(self.listener.enabled)
-        await self.listener.recognize('vosk',lambda _:result('hây gi pi ti'),self.utterance,self.writer,'7',context)
-        self.assertEqual(len(self.actions('wake')), 1)
+        self.assertEqual(self.actions('wake'), [])
 
     async def test_expired_result_does_not_operate_browser(self):
         context = self.listener.recognition_context()

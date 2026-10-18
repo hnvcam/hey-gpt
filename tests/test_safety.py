@@ -18,11 +18,11 @@ class Recognition(unittest.TestCase):
         return {"text":text,"result":[{"word":w,"conf":confidence} for w in text.split()]}
 
     def test_full_vietnamese_wake(self):
-        self.assertTrue(daemon.matched(self.result("hây gi pi ti")))
+        self.assertTrue(daemon.wake_match(self.result("hây gi pi ti")))
 
     def test_rejects_partial_low_confidence_and_normal_speech(self):
         for text,confidence in [("gi pi ti",1),("hây gi pi ti",0.7),("hôm nay trời đẹp",1),("hey gee pee",1)]:
-            self.assertFalse(daemon.matched(self.result(text,confidence)))
+            self.assertFalse(daemon.wake_match(self.result(text,confidence)))
 
     def test_native_fragmented_read(self):
         class Fragment(io.BytesIO):
@@ -36,7 +36,7 @@ class Lifecycle(unittest.IsolatedAsyncioTestCase):
         self.temp=tempfile.TemporaryDirectory()
         self.env=patch.dict(os.environ,{"XDG_RUNTIME_DIR":self.temp.name})
         self.env.start()
-        self.listener=daemon.Listener(Path("missing-model"))
+        self.listener=daemon.Listener()
 
     async def asyncTearDown(self):
         await self.listener.disarm()

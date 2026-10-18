@@ -4,8 +4,6 @@ import argparse
 import asyncio
 import contextlib
 import json
-import math
-from wake_words import PHRASES, wake_identity
 import os
 from pathlib import Path
 import secrets
@@ -14,10 +12,10 @@ import shutil
 import socket
 import struct
 import time
-from wav2vec_recognizer import Wav2VecVietnamese, wake_match, load_wake_profile
-from audio_control import PersonalSpeechGate, SpeechGate, STOP_PHRASES, stop_command, rms
+from wav2vec_recognizer import wake_match, load_wake_profile
+from wake_worker import WakeModels
+from audio_control import PersonalSpeechGate, SpeechGate, stop_command, rms
 from acoustic_keywords import acoustic_accept
-from voice_activity import VoiceActivity
 from conversation_idle import ConversationIdle
 from dictation import ENGLISH_TRIGGERS, ENGLISH_STOPS, STOP_PAUSE, command_text, terminal_stop, MAX_SECONDS, Parakeet, EnglishCommands, Recording, command_match, keyboard_text, load_settings, save_settings
 from diagnostics import trace, trace_error
@@ -37,21 +35,6 @@ BROWSER_ERRORS = frozenset({
 
 def runtime_dir():
     return Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")) / "hey-gpt"
-
-
-def matched(result, minimum=0.85, minimum_word=0.55):
-    """Complete phonetic wake phrase with a strong whole-phrase score.
-
-    One weaker syllable is normal in live speech. Missing syllables, unknown words
-    or an overall weak result still fail; no substring/fuzzy trigger is used.
-    """
-    words = result.get("result", [])
-    if not wake_identity(result.get("text", "")) or not words:
-        return False
-    scores = [word.get("conf", 0) for word in words]
-    return (all(math.isfinite(score) for score in scores) and min(scores) >= minimum_word
-            and sum(scores) / len(scores) >= minimum)
-
 
 
 async def command(*args):
@@ -90,10 +73,7 @@ async def unlocked_session(expected=None):
 
 
 class Listener:
-    def __init__(self, model_path, max_seconds=0, source=None, silence_seconds=15, engine_mode="both", wav2vec_path=None):
-        self.model_path = model_path
-        self.model = None
-        self.wake_grammar = None
+    def __init__(self, max_seconds=0, source=None, silence_seconds=15, wav2vec_path=None):
         self.source = source
         self.max_seconds = max_seconds
         self.clients = set()
@@ -129,9 +109,9 @@ class Listener:
         self.wake_checks = 0
         self.wake_matches = 0
         self.last_wake_check = "none"
-        self.engine_mode = engine_mode
         self.wav2vec_path = wav2vec_path or BASE / "models/wav2vec2-base-vietnamese-250h"
         self.wav2vec = None
+        self.wake_worker = None
         self.vad = None
         self.capture_starts = 0
         self.extension_version = 'unknown'
@@ -166,9 +146,9 @@ class Listener:
         self.final_stop_candidate=None
         self.last_finish_reason=None
         self.trace_state=None
-        self.engines = {name: {"state": "not-loaded" if engine_mode in {"both", name} else "disabled",
+        self.engines = {name: {"state": "not-loaded",
                                "checks": 0, "matches": 0, "skipped": 0, "latency_ms": 0}
-                        for name in ("vosk", "wav2vec2")}
+                        for name in ("wav2vec2",)}
 
 
     def snapshot(self):
@@ -194,7 +174,7 @@ class Listener:
                 "reply_ui_state": self.reply_guard.state_at(time.monotonic()),
                 "idle_remaining": self.reply_guard.remaining(time.monotonic(),self.last_activity,self.silence_seconds),
                 "recognizers": self.engines, "last_recognizer": self.last_recognizer,
-                "engine_mode": self.engine_mode, "personal_wake_phrases": len(self.wake_profile),
+                "personal_wake_phrases": len(self.wake_profile),
                 "extension_version": self.extension_version,
                 "voice_events": self.voice_events,
                 "voice_activity": {"state": "ready" if self.vad else "not-loaded",
@@ -228,6 +208,10 @@ class Listener:
                 self.send(writer, payload)
 
     async def disarm(self, detail="user-disarmed"):
+        # Chrome acknowledges our disable by sending another disarm. Keep the
+        # completed unload visible after that acknowledgement arrives.
+        if detail == 'user-disarmed' and self.detail == 'models-unloaded':
+            detail = 'models-unloaded'
         await self.cancel_dictation()
         self.reply_guard.reset()
         self.wake_id = None
@@ -387,16 +371,7 @@ class Listener:
             elif action == 'model-load':
                 self.start_model_load()
             elif action == 'model-unload':
-                self.recognition_epoch+=1
-                if self.english_job and not self.english_job.done():
-                    self.english_job.cancel()
-                    with contextlib.suppress(asyncio.CancelledError):await self.english_job
-                await self.cancel_dictation()
-                if self.model_task and not self.model_task.done():
-                    self.model_task.cancel()
-                    with contextlib.suppress(asyncio.CancelledError):await self.model_task
-                await self.parakeet.unload()
-                self.publish(self.state,self.detail,self.mic)
+                await self.unload_models()
             elif self.enabled and self.mic and self.phase=='wake' and await unlocked_session():
                 self.begin_dictation()
             else:
@@ -504,6 +479,8 @@ class Listener:
         self.publish(self.state,self.detail,self.mic)
 
     def start_model_load(self):
+        if self.detail == 'models-unloaded':
+            self.detail = 'local-microphone-closed'
         if not self.model_task or self.model_task.done():
             self.model_task=asyncio.create_task(self.load_dictation_model())
         return self.model_task
@@ -773,46 +750,53 @@ class Listener:
         if self.phase == "conversation" and self.reply_guard.expired(now,self.last_activity,self.silence_seconds):
             self.request_voice_stop(writer, "silence-timeout")
 
-    def decode(self, vosk, pcm, kind):
-        if kind == "wake":
-            if self.wake_grammar is None:
-                lookup = getattr(self.model, "vosk_model_find_word", None)
-                known = {w for phrase in PHRASES for w in phrase.split()
-                         if lookup is None or lookup(w) >= 0}
-                self.wake_grammar = [phrase for phrase in PHRASES
-                                     if all(w in known for w in phrase.split())]
-            rec = vosk.KaldiRecognizer(self.model, 16000, json.dumps([*self.wake_grammar, "[unk]"], ensure_ascii=False))
-        else:
-            # Full Vietnamese vocabulary preserves the surrounding sentence.
-            # A constrained stop-word grammar could turn ordinary speech into 'hết'.
-            rec = vosk.KaldiRecognizer(self.model, 16000)
-        rec.SetWords(True)
-        pieces = []
-        for offset in range(0, len(pcm), 6400):
-            if rec.AcceptWaveform(pcm[offset:offset+6400]):
-                pieces.append(json.loads(rec.Result()))
-        pieces.append(json.loads(rec.FinalResult()))
-        return {"text": " ".join(p.get("text", "") for p in pieces).strip(),
-                "result": [word for p in pieces for word in p.get("result", [])]}
+    async def unload_models(self):
+        await self.disarm('unloading-models')
+        if self.browser:
+            self.send(self.browser, {'type':'control', 'action':'disable'})
+        # Invalidate and cancel every producer before terminating either worker.
+        jobs = {job for job in (*self.recognition_jobs, self.english_job,
+                                self.wav2vec_loading, self.model_task)
+                if job and not job.done()}
+        for job in jobs:
+            job.cancel()
+        if jobs:
+            await asyncio.gather(*jobs, return_exceptions=True)
+        if self.wake_worker:
+            await asyncio.to_thread(self.wake_worker.close)
+        self.wake_worker = self.wav2vec = self.vad = None
+        self.wav2vec_loading = None
+        self.engine_busy.clear()
+        self.engines['wav2vec2'].update(state='unloaded',
+                                         device=None, templates=False)
+        await self.parakeet.unload()
+        self.dictation_error = None
+        self.publish('DISARMED', 'models-unloaded')
 
     async def prepare_wav2vec(self):
         self.engines["wav2vec2"]["state"] = "loading"
+        worker = self.wake_worker = WakeModels(self.wav2vec_path)
         try:
-            self.wav2vec = await asyncio.to_thread(Wav2VecVietnamese, self.wav2vec_path)
-            self.vad = await asyncio.to_thread(VoiceActivity, BASE/'models/silero-vad/silero_vad.jit',
-                                              self.wav2vec.torch,self.wav2vec.np,self.wav2vec.device)
+            await asyncio.to_thread(worker.load)
+            self.wav2vec, self.vad = worker, worker.vad
             self.engines["wav2vec2"]["state"] = "ready"
             self.engines["wav2vec2"]["device"] = self.wav2vec.device_name
             self.engines["wav2vec2"]["templates"] = bool(self.wav2vec.templates)
+        except asyncio.CancelledError:
+            await asyncio.to_thread(worker.close)
+            raise
         except FileNotFoundError:
             self.engines["wav2vec2"]["state"] = "model-missing"
         except ImportError:
             self.engines["wav2vec2"]["state"] = "dependencies-missing"
         except RuntimeError as exc:
             self.engines["wav2vec2"]["state"] = (str(exc) if str(exc) in {
-                "gpu-not-configured", "cuda-unavailable", "wrong-cuda-gpu"} else "load-error")
+                "gpu-not-configured", "cuda-unavailable", "wrong-cuda-gpu",
+                "model-missing", "dependencies-missing"} else "load-error")
         except Exception:
             self.engines["wav2vec2"]["state"] = "load-error"
+        if self.engines['wav2vec2']['state'] != 'ready':
+            await asyncio.to_thread(worker.close)
         self.publish(self.state, self.detail, self.mic)
 
     def recognition_context(self):
@@ -846,7 +830,7 @@ class Listener:
             if not self.result_is_current(context, started):
                 return
             kind = context[1]
-            accepted = ((matched(result) if engine == "vosk" else wake_match(result, self.wake_profile))
+            accepted = (wake_match(result, self.wake_profile)
                         if kind == "wake" else stop_command(result, utterance.preceding_silence))
             if engine == 'wav2vec2':
                 accepted = accepted or acoustic_accept(result, 'wake' if kind == 'wake' else 'stop',
@@ -886,7 +870,7 @@ class Listener:
         except asyncio.CancelledError:
             raise
         except Exception:
-            # Only this branch fails. The other recognizer keeps listening.
+            # Failed or stale recognition never operates Chrome.
             self.engines[engine]["state"] = "decode-error"
         finally:
             self.engine_busy.discard(engine)
@@ -898,22 +882,10 @@ class Listener:
             self.publish("ARMING", "loading-offline-model")
             if self.english is None and (not self.english_loading or self.english_loading.done()):
                 self.english_loading=asyncio.create_task(self.prepare_english())
-            vosk = None
-            if self.engine_mode in {"both", "wav2vec2"}:
-                if self.wav2vec is not None and self.vad is not None:
-                    self.engines["wav2vec2"]["state"] = "ready"
-                if self.wav2vec is None and (not self.wav2vec_loading or self.wav2vec_loading.done()):
-                    self.wav2vec_loading = asyncio.create_task(self.prepare_wav2vec())
-            if self.engine_mode in {"both", "vosk"}:
-                try:
-                    import vosk
-                    vosk.SetLogLevel(-1)
-                    if self.model is None:
-                        self.model = await asyncio.to_thread(vosk.Model, str(self.model_path))
-                    self.engines["vosk"]["state"] = "ready"
-                except Exception:
-                    self.engines["vosk"]["state"] = "load-error"
-                    vosk = None
+            if self.wav2vec is not None and self.vad is not None:
+                self.engines["wav2vec2"]["state"] = "ready"
+            if self.wav2vec is None and (not self.wav2vec_loading or self.wav2vec_loading.done()):
+                self.wav2vec_loading = asyncio.create_task(self.prepare_wav2vec())
             if not await unlocked_session(sid):
                 raise RuntimeError("screen-locked-or-session-unavailable")
             args = ["parec", "--raw", "--format=s16le", "--rate=16000", "--channels=1",
@@ -979,9 +951,6 @@ class Listener:
                 if utterance and not utterance.too_long:
                     kind = self.phase
                     if kind == "wake" or (kind == "conversation" and utterance.preceding_silence + 1e-6 >= 1.0):
-                        if vosk and self.engines["vosk"]["state"] == "ready":
-                            self.submit_recognition("vosk", lambda pcm, mode=kind: self.decode(vosk, pcm, mode),
-                                                    utterance, writer, sid)
                         if self.wav2vec and self.engines["wav2vec2"]["state"] == "ready":
                             self.submit_recognition("wav2vec2", self.wav2vec.decode, utterance, writer, sid)
                 if not any(v["state"] in {"ready", "loading"} for v in self.engines.values()):
@@ -1053,13 +1022,12 @@ async def main(args):
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     path = folder / "control.sock"
     path.unlink(missing_ok=True)
-    listener = Listener(args.model, args.max_seconds, args.source, args.silence_seconds, args.engine_mode, args.wav2vec_model)
+    listener = Listener(args.max_seconds, args.source, args.silence_seconds, args.wav2vec_model)
     listener.publish("DISARMED", "service-ready-microphone-closed")
     server = await asyncio.start_unix_server(listener.handle, path=str(path), limit=MAX_FRAME)
     path.chmod(0o600)
     # Warm the GPU and start local wake listening independently of Chrome.
-    if args.engine_mode in {"both", "wav2vec2"}:
-        listener.wav2vec_loading = asyncio.create_task(listener.prepare_wav2vec())
+    listener.wav2vec_loading = asyncio.create_task(listener.prepare_wav2vec())
     listener.english_loading=asyncio.create_task(listener.prepare_english())
     if listener.dictation_settings['autoload']:listener.start_model_load()
     if args.auto_listen:
@@ -1086,6 +1054,11 @@ async def main(args):
         listener.model_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):await listener.model_task
     await listener.parakeet.unload()
+    if listener.wav2vec_loading and not listener.wav2vec_loading.done():
+        listener.wav2vec_loading.cancel()
+        with contextlib.suppress(asyncio.CancelledError):await listener.wav2vec_loading
+    if listener.wake_worker:
+        await asyncio.to_thread(listener.wake_worker.close)
     if listener.keyboard and listener.keyboard.returncode is None:
         listener.keyboard.terminate();await listener.keyboard.wait()
     path.unlink(missing_ok=True)
@@ -1094,10 +1067,8 @@ async def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--auto-listen", action="store_true", help="Listen locally on service startup, without Chrome")
-    parser.add_argument("--model", type=Path, default=BASE / "models/vosk-model-small-vn-0.4")
     parser.add_argument("--source", help="PulseAudio/PipeWire source name; default source otherwise")
     parser.add_argument("--max-seconds", type=int, default=0, help="0: listen until disabled or locked")
     parser.add_argument("--silence-seconds", type=float, default=15, help="Voice inactivity timeout; 0 keeps Voice open until a stop command")
-    parser.add_argument("--engine-mode", choices=("both", "vosk", "wav2vec2"), default="wav2vec2")
     parser.add_argument("--wav2vec-model", type=Path, default=BASE / "models/wav2vec2-base-vietnamese-250h")
     asyncio.run(main(parser.parse_args()))

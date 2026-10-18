@@ -10,7 +10,7 @@ from daemon import Listener
 
 class BrowserIdleTimer(unittest.IsolatedAsyncioTestCase):
     async def test_no_busy_flag_is_not_treated_as_explicit_idle(self):
-        listener=Listener(Path('missing'))
+        listener=Listener()
         writer=Mock();listener.browser=writer
         listener.phase='conversation';listener.session='session-one'
         listener.last_activity=0
@@ -20,7 +20,7 @@ class BrowserIdleTimer(unittest.IsolatedAsyncioTestCase):
         listener.request_voice_stop.assert_not_called()
 
     async def test_processing_then_idle_counts_full_interval_in_daemon(self):
-        listener=Listener(Path('missing'))
+        listener=Listener()
         listener.phase='conversation';listener.last_activity=0
         listener.request_voice_stop=Mock()
         for t in range(60):

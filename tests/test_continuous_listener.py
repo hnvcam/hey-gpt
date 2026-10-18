@@ -15,7 +15,7 @@ from daemon import Listener
 class ContinuousListener(unittest.IsolatedAsyncioTestCase):
     async def test_voice_phase_changes_reuse_one_capture_and_one_vad_stream(self):
         with tempfile.TemporaryDirectory() as directory,patch.dict(os.environ,{'XDG_RUNTIME_DIR':directory}):
-            listener=Listener(Path('missing'),engine_mode='wav2vec2')
+            listener=Listener()
             listener.enabled=True
             listener.wav2vec=Mock()
             listener.vad=Mock(speech=False,probability=0.)
@@ -49,7 +49,7 @@ class ContinuousListener(unittest.IsolatedAsyncioTestCase):
 
     async def test_busy_wake_is_deferred_without_cancelling_microphone_task(self):
         with tempfile.TemporaryDirectory() as directory,patch.dict(os.environ,{'XDG_RUNTIME_DIR':directory}):
-            listener=Listener(Path('missing'),engine_mode='wav2vec2')
+            listener=Listener()
             browser=Mock();listener.browser=browser
             listener.enabled=listener.mic=True;listener.phase='opening'
             listener.task=asyncio.create_task(asyncio.Event().wait())

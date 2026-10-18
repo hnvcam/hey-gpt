@@ -12,7 +12,7 @@ class BrowserStatus(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temp=tempfile.TemporaryDirectory()
         self.env=patch.dict(os.environ,{'XDG_RUNTIME_DIR':self.temp.name});self.env.start()
-        self.listener=Listener(Path('unused'))
+        self.listener=Listener()
         self.browser=Mock();self.browser.is_closing.return_value=False
         self.listener.browser=self.browser
     async def asyncTearDown(self):

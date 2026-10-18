@@ -14,11 +14,11 @@ from daemon import Listener
 
 
 class AcousticLifecycle(unittest.IsolatedAsyncioTestCase):
-    async def test_template_only_done_stops_once_without_vosk_and_respects_pause(self):
+    async def test_template_only_done_stops_once_and_respects_pause(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {'XDG_RUNTIME_DIR':directory}), \
              patch('daemon.unlocked_session', AsyncMock(return_value='7')):
-            listener=Listener(Path('missing'),engine_mode='wav2vec2')
-            self.assertEqual(listener.engines['vosk']['state'],'disabled')
+            listener=Listener()
+            self.assertEqual(set(listener.engines),{'wav2vec2'})
             listener.enabled=listener.mic=True
             listener.phase='conversation'
             listener.session='voice-one'

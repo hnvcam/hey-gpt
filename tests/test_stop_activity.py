@@ -17,7 +17,7 @@ class StopActivity(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temp=tempfile.TemporaryDirectory()
         self.env=patch.dict(os.environ,{'XDG_RUNTIME_DIR':self.temp.name});self.env.start()
-        self.listener=Listener(Path('unused'),engine_mode='wav2vec2')
+        self.listener=Listener()
         self.listener.enabled=self.listener.mic=True
         self.listener.phase='conversation';self.listener.session='session-one'
         self.browser=Mock();self.browser.is_closing.return_value=False

@@ -4,21 +4,19 @@ import sys
 import unittest
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from wake_words import wake_identity, HEADS, LETTERS
-from daemon import matched
 from wav2vec_recognizer import wake_match
 
 def result(text,score=.95):
     return {'text':text,'result':[{'word':w,'conf':score} for w in text.split()]}
 
 class VariantIdentity(unittest.TestCase):
-    def test_requested_abbreviations_spellings_and_pronunciations_match_both_engines(self):
+    def test_requested_abbreviations_spellings_and_pronunciations_match(self):
         for text in ['Hey GPT','HEY G B T','hey G P T','hây gi bi ti','hay gờ bê tê',
                      'hê g bê tê','hây GBT','hay gp t','hey g bt','HeyGPT',
                      'hey G.P.T.','hêy gờ pê tê','hey gee pee tee','hey gee bee tee',
                      'hey chatGPT','hây chát g b t','hay dì bị tí']:
             with self.subTest(text=text):
                 self.assertEqual(wake_identity(text),'hey-gpt')
-                self.assertTrue(matched(result(text)))
                 self.assertTrue(wake_match(result(text)))
 
     def test_all_alias_combinations_and_joined_forms(self):

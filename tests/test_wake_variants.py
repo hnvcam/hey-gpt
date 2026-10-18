@@ -2,7 +2,7 @@ import sys
 import unittest
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from daemon import matched
+from wav2vec_recognizer import wake_match as matched
 
 def result(text,confidence):
  return {'text':text,'result':[{'word':w,'conf':c} for w,c in zip(text.split(),confidence)]}

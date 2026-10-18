@@ -257,10 +257,9 @@ class Studio:
         except Exception as exc:self.set(phase='error',message=str(exc))
 
 
-def replay_segment(pcm, kind, listener, vosk, wav, profile, vad=None):
+def replay_segment(pcm, kind, wav, profile, vad=None):
     from audio_control import SpeechGate, stop_command
     from acoustic_keywords import acoustic_accept
-    from daemon import matched
     from wav2vec_recognizer import wake_match
     gate = SpeechGate()
     if vad is not None:vad.reset()
@@ -272,18 +271,15 @@ def replay_segment(pcm, kind, listener, vosk, wav, profile, vad=None):
         _, utterance = gate.feed(block,voiced=vad.feed(block) if vad is not None else None)
         if utterance is not None:
             utterances.append(utterance)
-    out = dict(vosk=False, wav2vec2=False, either=False, utterances=len(utterances), details=[])
+    out = dict(wav2vec2=False, either=False, utterances=len(utterances), details=[])
     for utterance in utterances:
         if utterance.too_long:
             continue
-        first = listener.decode(vosk, utterance.pcm, kind) if vosk else {'text': '', 'result': []}
         second = wav.decode(utterance.pcm)
-        a = matched(first) if kind == 'wake' else stop_command(first, utterance.preceding_silence)
         b = (wake_match(second, profile) if kind == 'wake' else stop_command(second, utterance.preceding_silence)) or acoustic_accept(second, kind, utterance.preceding_silence)
-        out['vosk'] |= bool(a)
         out['wav2vec2'] |= bool(b)
-        out['details'].append(dict(vosk=first, wav2vec2=second, preceding_silence=utterance.preceding_silence))
-    out['either'] = out['vosk'] or out['wav2vec2']
+        out['details'].append(dict(wav2vec2=second, preceding_silence=utterance.preceding_silence))
+    out['either'] = out['wav2vec2']
     return out
 
 
@@ -291,9 +287,8 @@ def evaluate(session):
     from audio_control import rms
     from daemon import Listener
     from wav2vec_recognizer import Wav2VecVietnamese
-    vosk = None
     manifest = json.loads((session / 'manifest.json').read_text())
-    listener = Listener(ROOT / 'models/vosk-model-small-vn-0.4')
+    listener = Listener()
     wav = Wav2VecVietnamese(ROOT / 'models/wav2vec2-base-vietnamese-250h')
     from voice_activity import VoiceActivity
     vad=VoiceActivity(ROOT/'models/silero-vad/silero_vad.jit',wav.torch,wav.np,wav.device)
@@ -314,8 +309,8 @@ def evaluate(session):
         pcm = read_wav(path)
         if hashlib.sha256(pcm).hexdigest() != clip['sha256']:
             raise ValueError('Clip hash mismatch.')
-        wake = replay_segment(pcm, 'wake', listener, vosk, wav, listener.wake_profile,vad)
-        stop = replay_segment(pcm, 'stop', listener, vosk, wav, listener.wake_profile,vad)
+        wake = replay_segment(pcm, 'wake', wav, listener.wake_profile,vad)
+        stop = replay_segment(pcm, 'stop', wav, listener.wake_profile,vad)
         samples = array('h', pcm)
         if sys.byteorder != 'little':
             samples.byteswap()

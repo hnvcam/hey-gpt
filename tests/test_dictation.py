@@ -59,10 +59,13 @@ class AudioAndSettings(unittest.TestCase):
 
     def test_settings_persist_and_reject_bad_types(self):
         with tempfile.TemporaryDirectory() as folder,patch.dict(os.environ,{'XDG_CONFIG_HOME':folder}):
-            self.assertEqual(load_settings(),{'autoload':True,'silence_seconds':5})
-            save_settings({'autoload':False,'silence_seconds':10})
-            self.assertEqual(load_settings(),{'autoload':False,'silence_seconds':10})
-        for bad in ({'autoload':'no'},{'silence_seconds':True},{'silence_seconds':0},{'extra':1}):
+            self.assertEqual(load_settings(),{'autoload':True,'silence_seconds':5,'show_transcript':True})
+            save_settings({'autoload':False,'silence_seconds':10,'show_transcript':True})
+            self.assertEqual(load_settings(),{'autoload':False,'silence_seconds':10,'show_transcript':True})
+            save_settings({'autoload':True,'silence_seconds':7,'show_transcript':False})
+            self.assertEqual(load_settings(),{'autoload':True,'silence_seconds':7,'show_transcript':False})
+        for bad in ({'autoload':'no'},{'silence_seconds':True},{'silence_seconds':0},
+                    {'show_transcript':'yes'},{'extra':1}):
             with self.assertRaises(ValueError):validate_settings(bad)
 
 
@@ -70,7 +73,7 @@ class Lifecycle(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temp=tempfile.TemporaryDirectory()
         self.env=patch.dict(os.environ,{'XDG_RUNTIME_DIR':self.temp.name,'XDG_CONFIG_HOME':self.temp.name});self.env.start()
-        self.listener=daemon.Listener(Path('unused'))
+        self.listener=daemon.Listener()
         self.listener.enabled=self.listener.mic=True
         self.unlock=patch('daemon.unlocked_session',AsyncMock(return_value='7'));self.unlock.start()
         self.listener.parakeet=Mock(state='ready',error=None)
@@ -139,9 +142,49 @@ class Lifecycle(unittest.IsolatedAsyncioTestCase):
 
     async def test_unload_cancels_recording_and_releases_worker(self):
         self.listener.phase='typing-recording';self.listener.recording=Recording()
+        worker=self.listener.wake_worker=Mock()
+        self.listener.wav2vec=Mock()
+        self.listener.vad=Mock(probability=0.,speech=False)
+        self.listener.browser=Mock()
+        self.listener.browser.is_closing.return_value=False
         await self.listener.dispatch({'cmd':'model-unload'},self.writer)
         self.listener.parakeet.unload.assert_awaited_once()
+        worker.close.assert_called_once()
+        self.assertIsNone(self.listener.wav2vec)
+        self.assertIsNone(self.listener.vad)
+        self.assertFalse(self.listener.enabled)
+        self.assertFalse(self.listener.mic)
+        self.assertEqual(self.listener.detail,'models-unloaded')
+        self.assertEqual(self.listener.engines['wav2vec2']['state'],'unloaded')
+        self.assertIn(b'"action":"disable"',self.listener.browser.write.call_args.args[0])
         self.assertIsNone(self.listener.recording);self.assertEqual(self.listener.phase,'wake')
+        await self.listener.dispatch({'cmd':'disarm'},self.listener.browser)
+        self.assertEqual(self.listener.detail,'models-unloaded')
+        await self.listener.dispatch({'cmd':'model-load'},self.writer)
+        await self.listener.model_task
+        self.assertNotEqual(self.listener.detail,'models-unloaded')
+
+    async def test_unload_cancels_startup_load_and_stale_recognition(self):
+        entered=asyncio.Event()
+        async def loading():
+            entered.set()
+            await asyncio.Event().wait()
+        async def late_decode(_):
+            await asyncio.Event().wait()
+        self.listener.model_task=asyncio.create_task(loading())
+        self.listener.english=Mock()
+        self.listener.parakeet.transcribe.side_effect=late_decode
+        self.listener.submit_english(Utterance(b'x'*32000,1.2,500,False),'7')
+        self.listener.wav2vec_loading=asyncio.create_task(loading())
+        await entered.wait()
+        english=self.listener.english_job
+        wake_load=self.listener.wav2vec_loading
+        await self.listener.dispatch({'cmd':'model-unload'},self.writer)
+        self.assertTrue(self.listener.model_task.cancelled())
+        self.assertTrue(wake_load.cancelled())
+        self.assertTrue(english.done())
+        self.assertFalse(self.listener.enabled)
+        self.assertIsNone(self.listener.recording)
 
     async def test_browser_cannot_send_local_dictation_commands(self):
         for cmd in ('typing','model-load','model-unload','dictation-settings'):

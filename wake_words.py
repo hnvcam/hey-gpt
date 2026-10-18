@@ -1,4 +1,4 @@
-"""Shared English/Vietnamese wake spelling normalization for both recognizers."""
+"""Shared English/Vietnamese wake spelling normalization."""
 import itertools
 import re
 import unicodedata
@@ -10,15 +10,6 @@ LETTERS = (
     ('t','ti','te','thi','tee'),
 )
 NAMES = frozenset(''.join(parts) for parts in itertools.product(*LETTERS))
-# Spoken vocabulary only. Vosk filters this list against its real dictionary;
-# unknown abbreviations such as GPT must never have their syllables discarded.
-SPOKEN_PARTS = (
-    ('hây','hê','hey','hay','hei','hai'),
-    ('gi','chi','g','gờ','gê','di','đi','ghi'),
-    ('pi','bi','bê','p','b','pê'),
-    ('ti','t','tê','thi'),
-)
-PHRASES = tuple(' '.join(parts) for parts in itertools.product(*SPOKEN_PARTS))
 
 
 def fold(text):
