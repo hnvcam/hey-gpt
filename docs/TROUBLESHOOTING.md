@@ -53,10 +53,12 @@ composers still stop the operation for inspection.
 
 ## Voice stays open or a stop command is ignored
 
-Speak a stop command as a separate utterance after a pause and after ChatGPT
-audio stops. Commands captured during ChatGPT playback are ignored. Use the
-browser's End Voice control to interrupt playback, or the tray's turn-off action
-to also stop local listening.
+Speak a stop command as a separate utterance after a short pause (at least 0.35
+seconds). A locally recognized end command interrupts Voice immediately, even
+while ChatGPT speaks or playback status is unknown. Both local language decoders
+listen in Voice and in either dictation language, using one shared set of end
+commands. The browser's End Voice control and the tray's turn-off action remain
+available if speech is not recognized.
 
 The idle timer requires both a completed reply and confirmed quiet Voice audio.
 Missing or stale activity information keeps the call open. See the

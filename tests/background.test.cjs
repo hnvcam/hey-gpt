@@ -236,3 +236,13 @@ test('resumed audio vetoes a pending idle stop and preserves the same Voice sess
  assert.equal(f.requests.some(x=>['disarm','resume'].includes(x.cmd)),false);
  assert.equal(f.run('enabled&&sessionToken===\"session-token\"&&!stopPending'),true);
 });
+
+test('spoken end command interrupts through stop-command and resumes local wake without another start',async()=>{
+ const f=fixture();f.context.event={...event(),reason:'spoken-stop-command'};
+ await f.run('handleStop(event)');
+ assert.equal(f.pages[0],'stop-command');
+ assert.equal(f.requests.filter(x=>x.cmd==='resume').length,1);
+ assert.equal(f.pages.includes('start'),false);
+ assert.equal(f.requests.some(x=>['stop-vetoed','disarm'].includes(x.cmd)),false);
+ assert.equal(f.run('enabled&&armed&&!sessionToken&&!stopPending'),true);
+});

@@ -7,6 +7,35 @@ versions, timings, and test totals describe those runs, not a fresh verification
 of the current working tree. Automated simulations, recorded/synthetic audio,
 and real Chrome/microphone checks are listed separately.
 
+## 20 October 2026: shared commands and immediate Voice interruption
+
+Voice and both dictation languages now use one utterance gate, bilingual command
+policy and action handler. A recognized end command overrides reply/playback
+activity in both the service and extension. Automatic idle closure still requires
+confirmed quiet and a completed reply.
+
+Simulated checks: 210 Python tests completed successfully, with seven GTK tests
+skipped. All 34 page and 29 background JavaScript checks passed, along with the
+other five JavaScript suites. Coverage includes bilingual end aliases in either
+dictation language, interruption with busy/unknown/missing playback, duplicate
+decoder results, stale sessions, screen lock, and returning to local wake
+listening without starting another Voice call.
+
+Real local models, saved recordings: all 93 existing filtered clips were replayed
+through the shared command submission and actual local recognizers, with action
+execution replaced by observation. All 372 comparisons across wake, Voice,
+English dictation and Vietnamese dictation matched the expected command action.
+The 43 end-command clips matched in all three active modes; the other clips
+produced no false stops. Two “Hey GPT” clips labeled negative for dictation
+correctly count as positive Voice wakes. These include enrollment/reference and
+previously tested clips, not a new blind evaluation. No live microphone, browser
+actions or keyboard input were used in this replay.
+
+The installed service was restarted and Chrome reconnected with extension
+0.7.2. Status confirmed local listening, microphone open, all models ready and
+no reported error. Live spoken interruption during real ChatGPT playback was
+not verified in this update.
+
 ## 20 October 2026: bilingual dictation and Parakeet Q8
 
 Simulated checks: 183 Python tests completed successfully (six GTK tests skipped

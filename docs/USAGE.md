@@ -10,9 +10,9 @@ and respects your saved automatic listening preference.
 
 Say **“Hey GPT”**, wait for the two ascending ready tones, then ask your question.
 Vietnamese Wav2Vec2 and Silero VAD on the configured RTX 4060 recognize wake and
-stop commands. Optional personal audio samples can improve matching. The Voice
-listener stays on the configured GPU. English dictation commands use a separate
-English Vosk detector on CPU. Say “nhập lệnh” or “gõ câu” for Vietnamese dictation
+stop commands. Optional personal audio samples can improve matching. One command
+listener feeds both local language decoders and applies shared command rules in
+Voice and either dictation language. English Vosk runs on CPU. Say “nhập lệnh” or “gõ câu” for Vietnamese dictation
 with Wav2Vec2 + 4-gram decoding; see [dictation](DICTATION.md). Both languages paste
 their final text through the clipboard, preserving Vietnamese accents.
 
@@ -33,13 +33,15 @@ automatic Voice retry.
 
 ## End a Voice conversation
 
-After a pause of about 1–2 seconds, say **“hết”**, **“kết thúc”**, **“dừng lại”**,
+After a short pause (at least 0.35 seconds), say **“hết”**, **“kết thúc”**, **“dừng lại”**,
 or **“done”** as a separate utterance. These words inside a longer sentence do
-not count as stop commands. Local stop commands are accepted only after ChatGPT
-audio has stopped; keywords captured while ChatGPT speaks are ignored to avoid
-speaker audio ending the call. To interrupt immediately, use **End Voice** or
-clear **Bật trợ lý** in the tray menu. The latter also turns off local listening
-and unloads all models.
+not count as stop commands. A recognized end command immediately clicks **End
+Voice**, including while ChatGPT is processing or speaking and when playback
+status is unknown. It does not wait for another reply or the idle timer.
+The same end commands work in English and Vietnamese dictation; “stop typing”,
+“end typing”, “typing end”, “dừng nhập” and “ngừng nhập” also work in Voice.
+Clear **Bật trợ lý** in the tray menu to also turn off local listening and unload
+all models.
 
 Voice also closes after **15 seconds** with no further user speech, once the
 interface has completed the reply and Voice audio is confirmed quiet. The timer

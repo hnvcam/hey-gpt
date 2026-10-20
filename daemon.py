@@ -12,14 +12,15 @@ import shutil
 import socket
 import struct
 import time
-from wav2vec_recognizer import wake_match, load_wake_profile
+from wav2vec_recognizer import load_wake_profile
 from wake_worker import WakeModels
-from audio_control import PersonalSpeechGate, SpeechGate, stop_command, rms
-from acoustic_keywords import acoustic_accept
+from audio_control import PersonalSpeechGate, rms
+from commands import (COMMAND_PHASES, STOP_PHRASES, ENGLISH_TRIGGERS,
+                      VIETNAMESE_TRIGGERS, STOP_PAUSE, command_text, command_match,
+                      recognize_command, RecognizedCommand)
 from conversation_idle import ConversationIdle
-from dictation import ENGLISH_TRIGGERS, ENGLISH_STOPS, VIETNAMESE_TRIGGERS, VIETNAMESE_STOPS, STOP_PAUSE, command_text, terminal_stop, MAX_SECONDS, Parakeet, EnglishCommands, Recording, command_match, keyboard_text, load_settings, save_settings
+from dictation import terminal_stop, MAX_SECONDS, Parakeet, EnglishCommands, Recording, keyboard_text, load_settings, save_settings
 from vietnamese_dictation import VietnameseDictation
-from dictation import vietnamese_command_match
 from diagnostics import trace, trace_error
 
 BASE = Path(__file__).resolve().parent
@@ -91,9 +92,6 @@ class Listener:
         self.browser_detail = ""
         self.last_error = None
         self.last_voice_stop = None
-        self.last_remote_audio = None
-        self.remote_audio_updated = None
-        self.stop_echo_suppressed = 0
         self.enabled = False
         self.stopping = False
         self.wake_id = None
@@ -175,7 +173,6 @@ class Listener:
                               "preview_busy":bool(self.preview_job and not self.preview_job.done()),
                               "recorded_seconds":round(self.recording.elapsed,1) if self.recording else 0},
                 "ready_sound": dict(self.ready_sound), "last_voice_stop": self.last_voice_stop,
-                "stop_echo_suppressed": self.stop_echo_suppressed,
                 "silence_seconds": self.silence_seconds,
                 "reply_ui_state": self.reply_guard.state_at(time.monotonic()),
                 "idle_remaining": self.reply_guard.remaining(time.monotonic(),self.last_activity,self.silence_seconds),
@@ -421,7 +418,6 @@ class Listener:
                 self.phase = "conversation"
                 self.reply_guard.reset()
                 self.voice_events = {}
-                self.last_remote_audio = self.remote_audio_updated = None
                 self.phase_since = self.last_activity = time.monotonic()
                 self.browser_state = "VOICE"
                 self.publish("CONVERSATION", "listening-for-stop-commands", self.mic)
@@ -440,8 +436,6 @@ class Listener:
                 from native_host import clean_voice_events
                 self.voice_events=clean_voice_events(msg.get('voice_events'))
                 playback=self.voice_events.get('playback_state')
-                self.remote_audio_updated=now
-                if playback=='busy':self.last_remote_audio=now
                 state=msg.get('ui_state')
                 # An older adapter's absence of a busy flag is not proof of idle.
                 if state not in {'idle','busy','unknown'}:
@@ -660,7 +654,7 @@ class Listener:
             if candidate and pcm:
                 cut,tail=candidate
                 tail_command=command_text(await self.transcribe_dictation(tail))
-                matched=tail_command in (VIETNAMESE_STOPS if self.dictation_language=='vi' else ENGLISH_STOPS)
+                matched=tail_command in STOP_PHRASES
                 trace('daemon','final-stop-check',dictation_id=self.dictation_id,matched=matched,
                       command=tail_command if matched else None)
                 if matched:
@@ -696,6 +690,43 @@ class Listener:
             await self.close_keyboard()
             self.dictation_failed('dictation-transcription-or-keyboard-failed')
 
+    def submit_commands(self, utterance, writer, sid):
+        """Every command utterance reaches both local language decoders."""
+        if self.phase not in COMMAND_PHASES or utterance.too_long:
+            return
+        if self.wav2vec and self.engines['wav2vec2']['state']=='ready':
+            self.submit_recognition('wav2vec2',self.wav2vec.decode,utterance,writer,sid)
+        self.submit_english(utterance,sid)
+
+    async def apply_recognized_command(self, command, utterance, writer, sid, context, started, end=None):
+        """One freshness/session check and one action router for every decoder."""
+        if command is None or not self.result_is_current(context,started):
+            return False
+        if not await unlocked_session(sid):
+            await self.disarm('screen-locked-or-session-unavailable')
+            return False
+        if not self.result_is_current(context,started):
+            return False
+        if command.action=='stop':
+            if self.phase=='conversation':
+                self.request_voice_stop(writer,'spoken-stop-command')
+            elif self.phase=='typing-recording' and self.recording is not None and end is not None:
+                self.preview_text=terminal_stop(self.preview_text)[0]
+                self.finish_dictation(max(0,end-len(utterance.pcm)))
+            else:
+                return False
+        elif command.action=='dictation':
+            self.begin_dictation(command.language)
+        elif command.action=='wake':
+            if time.monotonic()-self.last_wake<1:
+                return False
+            self.wake_matches+=1
+            await self.begin_wake(writer)
+        else:
+            return False
+        trace('daemon','local-command-applied',action=command.action,phase=context[1],language=command.language)
+        return True
+
     def submit_english(self, utterance, sid):
         if (not self.english and self.parakeet.state not in {'ready','transcribing'}) or self.english_busy:
             if self.phase=='typing-recording':trace('daemon','command-skipped',reason='recognizer-busy-or-unavailable',seconds=round(len(utterance.pcm)/32000,2))
@@ -713,20 +744,20 @@ class Listener:
         try:
             if not self.result_is_current(context,started):return
             kind=context[1]
-            phrases=ENGLISH_TRIGGERS if kind=='wake' else ENGLISH_STOPS
-            if kind not in {'wake','typing-recording'}:return
-            if kind=='typing-recording' and utterance.preceding_silence+1e-6<STOP_PAUSE:
+            phrases=ENGLISH_TRIGGERS if kind=='wake' else STOP_PHRASES
+            if kind not in COMMAND_PHASES:return
+            if kind!='wake' and utterance.preceding_silence+1e-6<STOP_PAUSE:
                 outcome='insufficient-pause';return
             self.english_stats['checks']+=1
             acoustic_kind='typing' if kind=='wake' else 'typing-stop'
             accepted=False
+            result={}
             engine='personal'
             if self.wav2vec and getattr(self.wav2vec,'typing_templates',None):
                 personal=await asyncio.to_thread(self.wav2vec.match_typing,utterance.pcm,acoustic_kind,'en',kind=='wake') is True
                 accepted=personal
             if not self.result_is_current(context,started):return
             if not accepted:
-                result={}
                 engine='vosk'
                 if self.english:
                     result=await asyncio.wait_for(asyncio.to_thread(self.english.decode,utterance.pcm),3)
@@ -738,20 +769,19 @@ class Listener:
             if not accepted and self.parakeet.state in {'ready','transcribing'}:
                 text=await self.parakeet.transcribe(utterance.pcm)
                 accepted=command_text(text) in phrases
-                if accepted:phrase=command_text(text)
+                if accepted:
+                    phrase=command_text(text)
+                    result={'text':phrase,'result':[{'word':w,'conf':1.0} for w in phrase.split()]}
                 engine='parakeet'
             if accepted and personal:engine='personal'
             outcome='no-match' if not accepted else 'stale'
             self.english_stats['last_engine']=engine
-            if accepted and self.result_is_current(context,started) and await unlocked_session(sid) and self.result_is_current(context,started):
+            command=recognize_command(result,'en',kind,utterance.preceding_silence,personal=personal) if accepted else None
+            if await self.apply_recognized_command(command,utterance,None,sid,context,started,end):
                 self.english_stats['matches']+=1
                 self.english_stats[engine+'_matches']+=1
                 outcome='accepted'
                 trace('daemon','command-accepted',phase=kind,engine=engine,personal_match=personal,command=phrase)
-                if kind=='wake':self.begin_dictation()
-                else:
-                    self.preview_text=terminal_stop(self.preview_text)[0]
-                    self.finish_dictation(max(0,end-len(utterance.pcm)))
         except asyncio.CancelledError:raise
         except Exception as exc:
             outcome='error'
@@ -871,59 +901,19 @@ class Listener:
             if not self.result_is_current(context, started):
                 return
             kind = context[1]
-            # Vietnamese personal starts use a strict whole-utterance match;
-            # broader acoustic evidence still needs lexical confirmation.
-            if engine=='wav2vec2' and (kind=='wake' or kind=='typing-recording' and self.dictation_language=='vi'):
-                matched=vietnamese_command_match(result,kind=='wake')
-                if (not matched and kind=='wake' and self.vietnamese.state=='ready'
-                        and result.get('vietnamese_acoustic',{}).get('typing') is True):
-                    confirmation=command_text(await self.vietnamese.transcribe(utterance.pcm))
-                    matched=confirmation in VIETNAMESE_TRIGGERS
-                if kind=='typing-recording' and utterance.preceding_silence+1e-6<STOP_PAUSE:matched=False
-                if matched and await unlocked_session(sid) and self.result_is_current(context,started):
-                    if kind=='wake':self.begin_dictation('vi')
-                    elif self.recording and recording_end is not None:
-                        cut=max(0,recording_end-len(utterance.pcm))
-                        self.finish_dictation(cut)
-                    return
-                if kind=='typing-recording':return
-            accepted = (wake_match(result, self.wake_profile)
-                        if kind == "wake" else stop_command(result, utterance.preceding_silence))
-            if engine == 'wav2vec2':
-                accepted = accepted or acoustic_accept(result, 'wake' if kind == 'wake' else 'stop',
-                                                       utterance.preceding_silence)
+            command=recognize_command(result,'vi',kind,utterance.preceding_silence,self.wake_profile)
+            # Preserve full-vocabulary confirmation for a broad personal start.
+            if (command is None and kind=='wake' and self.vietnamese.state=='ready'
+                    and result.get('vietnamese_acoustic',{}).get('typing') is True):
+                confirmation=command_text(await self.vietnamese.transcribe(utterance.pcm))
+                if confirmation in VIETNAMESE_TRIGGERS:
+                    command=RecognizedCommand('dictation','vi')
             if kind == "wake":
                 self.wake_checks += 1
-                self.last_wake_check = "matched" if accepted else "not-matched"
-            if not accepted:
-                return
-            # Session checks await external state. Recheck the context afterward
-            # so two simultaneous recognizers cannot both emit the same action.
-            if not await unlocked_session(sid):
-                await self.disarm("screen-locked-or-session-unavailable")
-                return
-            if not self.result_is_current(context, started):
-                return
-            if kind == 'conversation':
-                now=time.monotonic()
-                # An isolated keyword heard in ChatGPT's own playback must not
-                # hang up the call. Accept speech stops only from a verified
-                # quiet interval which did not overlap the captured utterance.
-                began=started-len(utterance.pcm)/32000-.75
-                quiet=(self.voice_events.get('playback_state')=='quiet' and
-                       self.remote_audio_updated is not None and 0<=now-self.remote_audio_updated<2.5)
-                overlap=self.last_remote_audio is not None and self.last_remote_audio>=began
-                if not quiet or overlap:
-                    self.stop_echo_suppressed += 1
-                    print(json.dumps({'event':'stop-keyword-suppressed','reason':'remote-audio-active-or-unverified'}),flush=True)
-                    return
-            stats["matches"] += 1
-            self.last_recognizer = engine
-            if kind == "wake" and time.monotonic() - self.last_wake >= 1:
-                self.wake_matches += 1
-                await self.begin_wake(writer)
-            elif kind == "conversation":
-                self.request_voice_stop(writer, "spoken-stop-command")
+                self.last_wake_check = "matched" if command and command.action=='wake' else "not-matched"
+            if await self.apply_recognized_command(command,utterance,writer,sid,context,started,recording_end):
+                stats['matches']+=1
+                self.last_recognizer=engine
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -965,8 +955,7 @@ class Listener:
             deadline = time.monotonic() + self.max_seconds if self.max_seconds else float("inf")
             check_at = 0
             status_at = 0
-            gate, personal_gate, gate_phase = SpeechGate(), PersonalSpeechGate(), self.phase
-            typing_gate=PersonalSpeechGate(tail=STOP_PAUSE,preroll_frames=2)
+            gate, gate_phase = PersonalSpeechGate(tail=STOP_PAUSE,preroll_frames=2), self.phase
             while time.monotonic() < deadline:
                 now = time.monotonic()
                 if now >= check_at:
@@ -981,27 +970,18 @@ class Listener:
                     self.publish("CONVERSATION" if self.phase == "conversation" else "LISTENING",
                                  "listening-for-stop-commands" if self.phase == "conversation" else "offline-hey-gpt-only", True)
                 if gate_phase != self.phase:
-                    gate, personal_gate, gate_phase = SpeechGate(), PersonalSpeechGate(), self.phase
-                    typing_gate=PersonalSpeechGate(tail=STOP_PAUSE,preroll_frames=2)
+                    gate, gate_phase = PersonalSpeechGate(tail=STOP_PAUSE,preroll_frames=2), self.phase
                 activity = await asyncio.to_thread(self.vad.feed,data) if self.vad else None
                 voiced, utterance = gate.feed(data,voiced=activity)
-                english_voiced,english_utterance=voiced,utterance
-                if self.phase in {'wake','typing-recording'} and self.wav2vec and getattr(self.wav2vec,'typing_templates',None):
-                    english_voiced,english_utterance=personal_gate.feed(data,voiced=activity)
-                if self.phase=='typing-recording':
-                    english_voiced,english_utterance=typing_gate.feed(data,voiced=activity)
                 self.audio_level = round(rms(data))
                 now = time.monotonic()
                 if now >= status_at:
                     self.publish(self.state, self.detail, self.mic)
                     status_at = now + 1
                 if self.phase=='typing-recording' and self.recording:
-                    ended=self.recording.feed(data,english_voiced)
-                    if english_utterance and not english_utterance.too_long:
-                        if self.dictation_language=='vi':
-                            if self.wav2vec:self.submit_recognition('wav2vec2',self.wav2vec.decode,english_utterance,writer,sid)
-                        else:self.submit_english(english_utterance,sid)
-                    if ended and (not self.english_busy or self.recording.elapsed+1e-6>=MAX_SECONDS):self.finish_dictation()
+                    ended=self.recording.feed(data,voiced)
+                    if utterance:self.submit_commands(utterance,writer,sid)
+                    if ended and (not self.english_busy and not self.engine_busy or self.recording.elapsed+1e-6>=MAX_SECONDS):self.finish_dictation()
                     elif self.recording:self.maybe_preview_dictation()
                     continue
                 if self.phase.startswith('typing'):
@@ -1014,13 +994,7 @@ class Listener:
                     elif self.phase == "closing" and now - self.phase_since > 20:
                         raise RuntimeError("browser-transition-timeout")
                     continue
-                if self.phase=='wake' and english_utterance and not english_utterance.too_long:
-                    self.submit_english(english_utterance,sid)
-                if utterance and not utterance.too_long:
-                    kind = self.phase
-                    if kind == "wake" or (kind == "conversation" and utterance.preceding_silence + 1e-6 >= 1.0):
-                        if self.wav2vec and self.engines["wav2vec2"]["state"] == "ready":
-                            self.submit_recognition("wav2vec2", self.wav2vec.decode, utterance, writer, sid)
+                if utterance:self.submit_commands(utterance,writer,sid)
                 if not any(v["state"] in {"ready", "loading"} for v in self.engines.values()):
                     raise RuntimeError("recognizers-unavailable")
                 self.check_inactivity(writer, now)

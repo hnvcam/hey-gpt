@@ -6,7 +6,7 @@
 <label>Mở khi nghe “Hey GPT”<select id="mode"><option value="voice">Trò chuyện Voice</option><option value="dictate">Nhập bằng giọng nói</option></select></label>
 <div class="actions"><button id="arm">Bật trợ lý</button><button id="off">Tắt trợ lý</button></div>
 <section aria-live="polite"><strong id="mic">Micro local: đang kiểm tra</strong><p id="activity"></p><p id="turn"></p><p id="events"></p><p id="status"></p><p id="browser"></p></section>
-<p class="note">Gọi “Hey GPT”, đợi Voice mở rồi nói câu hỏi. Để kết thúc: nghỉ khoảng 1 giây rồi nói riêng “hết”, “kết thúc”, “dừng lại” hoặc “done”; hoặc chờ ChatGPT về idle rồi im lặng 15 giây. Trợ lý tự đóng Voice và chờ lần gọi tiếp.</p>
+<p class="note">Gọi “Hey GPT”, đợi Voice mở rồi nói câu hỏi. Nói riêng “hết”, “kết thúc”, “dừng lại” hoặc “done” sau một nhịp nghỉ ngắn để kết thúc ngay, kể cả khi ChatGPT đang trả lời. Các lệnh dừng dùng chung cho Voice và nhập văn bản ở cả hai ngôn ngữ. Hoặc chờ ChatGPT về idle rồi im lặng 15 giây. Trợ lý tự đóng Voice và chờ lần gọi tiếp.</p>
 <p class="note">Bật trợ lý sẽ nạp toàn bộ mô hình và bắt đầu nghe. Tắt trợ lý sẽ đóng micro local, gỡ mô hình và yêu cầu kết thúc Voice ở tab đã chọn. Chọn tự nghe khi khởi động trong Cài đặt từ biểu tượng GPT. Nếu mất kết nối hoặc đang Dictate, kiểm tra nút dừng trong ChatGPT.</p>
 <small id="version">0.6.1 · Nghe local liên tục · Không OpenAI API</small>
 <script src="popup.js"></script></body></html>

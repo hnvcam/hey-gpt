@@ -1,10 +1,9 @@
-"""Regression coverage for false idle and speaker-echo stop commands."""
+"""Explicit commands override activity; automatic idle stops still wait."""
 import asyncio
 import json
 import os
 from pathlib import Path
 import tempfile
-import time
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -44,21 +43,18 @@ class StopActivity(unittest.IsolatedAsyncioTestCase):
                 self.listener.check_inactivity(self.browser,second)
         events=[json.loads(c.args[0]) for c in self.browser.write.call_args_list]
         self.assertFalse(any(e.get('type')=='stop' for e in events))
-    async def test_local_keyword_during_or_overlapping_remote_speech_does_not_hang_up(self):
+    async def test_local_keyword_overrides_busy_unknown_and_missing_playback(self):
         result={'text':'hết','result':[{'word':'hết','conf':.99}],'acoustic':{'stop':True}}
         utterance=Utterance(b'\0'*64000,1.5,500,False)
-        for playback,overlap in [('busy',False),('unknown',False),('quiet',True)]:
+        for playback in ('busy','unknown','quiet',None):
+            self.listener.phase='conversation'
             self.listener.voice_events={'playback_state':playback}
-            self.listener.remote_audio_updated=time.monotonic()
-            self.listener.last_remote_audio=time.monotonic()-1 if overlap else None
             await self.listener.recognize('wav2vec2',lambda _:result,utterance,None,'7',self.listener.recognition_context())
-            self.assertEqual(self.listener.phase,'conversation')
-        self.assertEqual(self.listener.stop_echo_suppressed,3)
-    async def test_personal_done_command_still_works_after_verified_quiet(self):
+            self.assertEqual(self.listener.phase,'closing')
+            self.assertEqual(self.listener.last_voice_stop['reason'],'spoken-stop-command')
+    async def test_personal_done_command_interrupts_without_activity_proof(self):
         result={'text':'đan','result':[{'word':'đan','conf':.5}],'acoustic':{'stop':True}}
-        self.listener.voice_events={'playback_state':'quiet'}
-        self.listener.remote_audio_updated=time.monotonic()
-        self.listener.last_remote_audio=time.monotonic()-10
+        self.listener.voice_events={}
         await self.listener.recognize('wav2vec2',lambda _:result,Utterance(b'\0'*32000,1.5,500,False),None,'7',self.listener.recognition_context())
         self.assertEqual(self.listener.phase,'closing')
         self.assertEqual(self.listener.last_voice_stop['reason'],'spoken-stop-command')

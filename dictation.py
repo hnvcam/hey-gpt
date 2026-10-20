@@ -9,6 +9,9 @@ import sys
 from pathlib import Path
 import time
 import unicodedata
+from commands import (ENGLISH_TRIGGERS, ENGLISH_STOPS, VIETNAMESE_TRIGGERS,
+                      VIETNAMESE_STOPS, STOP_PHRASES, STOP_PAUSE, command_text,
+                      command_match, vietnamese_command_match)
 
 RATE_BYTES = 32000
 MAX_SECONDS = 180
@@ -49,47 +52,12 @@ def save_settings(value):
     return value
 
 
-ENGLISH_TRIGGERS = frozenset({'typing this', 'type this'})
-ENGLISH_STOPS = frozenset({'stop typing','end typing','typing end'})
-VIETNAMESE_TRIGGERS = frozenset({'nhập lệnh', 'gõ câu'})
-VIETNAMESE_STOPS = frozenset({'dừng nhập', 'ngừng nhập', 'hết', 'kết thúc'})
-STOP_PAUSE = .35
-
-
 def terminal_stop(text, language='en'):
     """A final command sentence, never a phrase inside an ordinary sentence."""
-    phrases=VIETNAMESE_STOPS if language=='vi' else ENGLISH_STOPS
+    phrases=STOP_PHRASES
     pattern=r'(?:^|(?<=[.!?])\s+)('+ '|'.join(re.escape(p) for p in sorted(phrases)) +r')[.!?\s]*$'
     match=re.search(pattern,text,re.IGNORECASE)
     return (text[:match.start()].rstrip(),match.group(1).lower()) if match else (text,None)
-
-
-def command_text(text):
-    return ' '.join(re.sub(r"[^\w\s]", ' ', unicodedata.normalize('NFC',text).casefold()).split()) if isinstance(text,str) else ''
-
-
-def command_match(result, phrases, minimum=.80):
-    text=command_text(result.get('text',''))
-    words=result.get('result', [])
-    if text not in phrases or len(words)!=len(text.split()):return False
-    scores=[w.get('conf',0) for w in words]
-    if not scores or not all(isinstance(c,(float,int)) and 0<=c<=1 for c in scores):return False
-    # A full-vocabulary transcript and a command-grammar transcript must agree
-    # before accepting a lower-confidence pronunciation. Grammar alone cannot wake.
-    confirmed=result.get('grammar_confirmed')==text
-    return (min(scores)>=minimum and sum(scores)/len(scores)>=.88 or
-            confirmed and min(scores)>=.35 and sum(scores)/len(scores)>=.55)
-
-
-def vietnamese_command_match(result, starting):
-    phrases=VIETNAMESE_TRIGGERS if starting else VIETNAMESE_STOPS
-    if starting and result.get('vietnamese_acoustic',{}).get('typing_confirmed') is True:return True
-    personal=result.get('vietnamese_acoustic',{}).get('typing' if starting else 'typing-stop') is True
-    if command_match(result,phrases):return True
-    # The broader personal match needs lexical confirmation. A separately
-    # validated strict match above can recover a mis-transcribed command.
-    if not starting:return personal
-    return personal and command_text(result.get('text','')) in phrases
 
 
 def keyboard_text(text):
@@ -140,8 +108,11 @@ class EnglishCommands:
     def decode(self, pcm):
         result=self._decode(pcm)
         text=command_text(result['text'])
-        if text in ENGLISH_TRIGGERS|ENGLISH_STOPS and not command_match(result,{text}):
-            checked=self._decode(pcm,[*sorted(ENGLISH_TRIGGERS|ENGLISH_STOPS),'[unk]'])
+        # Vosk's English vocabulary cannot encode Vietnamese. Both decoders
+        # still feed the shared policy; grammar confirmation uses supported words.
+        phrases={p for p in ENGLISH_TRIGGERS|STOP_PHRASES if p.isascii()}
+        if text in phrases and not command_match(result,{text}):
+            checked=self._decode(pcm,[*sorted(phrases),'[unk]'])
             if command_match(checked,{text},minimum=.85):result['grammar_confirmed']=text
         return result
     def _decode(self, pcm, grammar=None):

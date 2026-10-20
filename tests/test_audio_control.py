@@ -22,7 +22,8 @@ class CommandBoundaries(unittest.TestCase):
   for phrase in ['dấu chấm hết','tôi vẫn chưa nói hết','nếu kết thúc thì sao','do not say done','đừng dừng lại','hết bao nhiêu tiền']:
    with self.subTest(phrase=phrase):self.assertFalse(stop_command(result(phrase),2))
  def test_command_without_pause_is_not_stop(self):
-  for pause in [0,.3,.8]:self.assertFalse(stop_command(result('hết'),pause))
+  for pause in [0,.2,.3]:self.assertFalse(stop_command(result('hết'),pause))
+  self.assertTrue(stop_command(result('hết'),.35))
  def test_needs_final_words_and_confidence(self):
   self.assertFalse(stop_command({'text':'hết'},2))
   self.assertFalse(stop_command({'text':'hết','result':[{'word':'hết','conf':.2}]},2))

@@ -95,5 +95,6 @@ class TemplateBank:
 def acoustic_accept(result, kind, preceding_silence):
     # Ignore transcript spellings/scores here. This evidence is already validated
     # by the model-specific enrolled bank; the conversation boundary still wins.
+    from commands import STOP_PAUSE
     return (result.get('acoustic', {}).get(kind) is True
-            and (kind == 'wake' or preceding_silence+1e-6 >= 1.0))
+            and (kind == 'wake' or preceding_silence+1e-6 >= STOP_PAUSE))

@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import daemon
 import native_host
+from wav2vec_recognizer import wake_match
 
 
 class Recognition(unittest.TestCase):
@@ -18,11 +19,11 @@ class Recognition(unittest.TestCase):
         return {"text":text,"result":[{"word":w,"conf":confidence} for w in text.split()]}
 
     def test_full_vietnamese_wake(self):
-        self.assertTrue(daemon.wake_match(self.result("hây gi pi ti")))
+        self.assertTrue(wake_match(self.result("hây gi pi ti")))
 
     def test_rejects_partial_low_confidence_and_normal_speech(self):
         for text,confidence in [("gi pi ti",1),("hây gi pi ti",0.7),("hôm nay trời đẹp",1),("hey gee pee",1)]:
-            self.assertFalse(daemon.wake_match(self.result(text,confidence)))
+            self.assertFalse(wake_match(self.result(text,confidence)))
 
     def test_native_fragmented_read(self):
         class Fragment(io.BytesIO):

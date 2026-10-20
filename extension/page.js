@@ -199,13 +199,15 @@
     if(action==='stop-idle'||action==='stop-command') {
       const watchState=state.watch;
       if(!watchState||watchState.token!==token)return {state:'STOP_VETOED'};
-      const prior=state.events,nonce=queryEvents();
-      if(nonce){
-        for(let n=0;n<8&&state.events===prior;n++)await new Promise(resolve=>setTimeout(resolve,125));
-        if(state.events===prior)return {state:'STOP_VETOED'};
-      }
-      if(state.watch!==watchState||playbackStatus()!=='quiet')return {state:'STOP_VETOED'};
+      // An explicit local command interrupts immediately. Only the automatic
+      // idle timeout depends on reply completion and verified quiet playback.
       if(action==='stop-idle'){
+        const prior=state.events,nonce=queryEvents();
+        if(nonce){
+          for(let n=0;n<8&&state.events===prior;n++)await new Promise(resolve=>setTimeout(resolve,125));
+          if(state.events===prior)return {state:'STOP_VETOED'};
+        }
+        if(state.watch!==watchState||playbackStatus()!=='quiet')return {state:'STOP_VETOED'};
         const seconds=Number.isFinite(options.idleSeconds)?Math.max(1,Math.min(3600,options.idleSeconds)):15;
         if(turnStatus()!=='idle'||watchState.idleSince==null||Date.now()-watchState.idleSince<seconds*1000)
           return {state:'STOP_VETOED'};

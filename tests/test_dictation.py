@@ -342,7 +342,7 @@ class TriggerReliability(unittest.IsolatedAsyncioTestCase):
         self.listener.english=Mock()
         with patch.object(self.listener,'begin_dictation') as begin:
             await self.listener.recognize_english(Utterance(b'x'*64000,1.2,500,False),'7',self.listener.recognition_context(),None)
-            begin.assert_called_once_with()
+            begin.assert_called_once_with('en')
         self.listener.wav2vec.match_typing.assert_called_once_with(b'x'*64000,'typing','en',True)
         self.listener.english.decode.assert_not_called()
         self.listener.parakeet.transcribe.assert_not_called()

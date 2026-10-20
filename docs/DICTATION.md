@@ -12,6 +12,10 @@ two ascending ready tones before dictating:
 | English / Parakeet TDT v2 Q8 | “typing this” or “type this” | “stop typing”, “end typing” or “typing end” |
 | Vietnamese / Wav2Vec2 + 4-gram | “nhập lệnh” or “gõ câu” | “dừng nhập”, “ngừng nhập”, “hết” or “kết thúc” |
 
+All end commands are shared across both dictation languages and ChatGPT Voice.
+For example, “hết” can finish English dictation, and “end typing” can close Voice.
+“dừng lại”, “kết thúc trò chuyện” and “done” also finish either dictation language.
+
 Pause at least 0.35 seconds before a spoken finish and say it as a separate
 utterance. Commands inside ordinary sentences do not count. You can also finish
 by staying silent (default 5 seconds, configurable from 2–30). Recordings have a

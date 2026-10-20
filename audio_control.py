@@ -4,22 +4,13 @@ from collections import deque
 from dataclasses import dataclass
 import math
 import sys
-
-STOP_PHRASES = frozenset({'hết','kết thúc','dừng lại','done','kết thúc trò chuyện'})
+from commands import STOP_PHRASES, stop_command
 
 
 def rms(pcm):
     samples=array('h',pcm)
     if sys.byteorder!='little':samples.byteswap()
     return math.sqrt(sum(int(x)*int(x) for x in samples)/len(samples)) if samples else 0
-
-
-def stop_command(result, preceding_silence, minimum_pause=1.0):
-    """An entire separate utterance, never a substring in an ordinary sentence."""
-    text=' '.join(result.get('text','').lower().split())
-    words=result.get('result',[])
-    return (preceding_silence+1e-6>=minimum_pause and text in STOP_PHRASES
-            and len(words)==len(text.split()) and all(w.get('conf',0)>=0.80 for w in words))
 
 
 @dataclass
@@ -67,7 +58,7 @@ class PersonalSpeechGate(SpeechGate):
     """Do not let a VAD miss discard a clear personal command.
 
     Audio energy may establish a boundary; the enrolled whole-utterance matcher
-    must still confirm the command. This gate is not used for Voice hang-up.
+    must still confirm the command. Voice and both dictation languages share it.
     """
     def feed(self, pcm, voiced=None):
         return super().feed(pcm,voiced=True if voiced else None)

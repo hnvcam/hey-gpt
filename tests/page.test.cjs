@@ -239,13 +239,20 @@ test('idle closure requires a full continuous quiet countdown and a current sess
  for(let i=0;i<16;i++){f.advance(1);f.setEvents('unknown');f.frame(true);}
  assert.equal((await f.run('stop-idle')).closed,true);assert.equal(f.clicks(),2);
 });
-test('spoken-stop closure is vetoed while playback is busy or unknown',async()=>{
- for(const playback of ['busy','unknown']){
+test('spoken-stop interrupts busy, unknown and quiet playback without waiting for a query',async()=>{
+ for(const playback of ['busy','unknown','quiet']){
   const f=fixture();await f.run('start');f.setEvents('unknown',0,playback);
-  assert.equal((await f.run('stop-command')).state,'STOP_VETOED');assert.equal(f.clicks(),1);
+  const before=f.clock();
+  assert.equal((await f.run('stop-command')).closed,true);assert.equal(f.clicks(),2);
+  assert.equal(f.clock()-before,3); // Only closure confirmation, after End was clicked.
  }
- const f=fixture();await f.run('start');f.setEvents('unknown');
+ const f=fixture({bridge:true});await f.run('start');f.setBridge(null);
  assert.equal((await f.run('stop-command')).closed,true);
+});
+
+test('spoken-stop cannot close an unwatched session',async()=>{
+ const f=fixture({already:true});
+ assert.equal((await f.run('stop-command')).state,'STOP_VETOED');assert.equal(f.clicks(),0);
 });
 
 test('an unanswered fresh playback query vetoes closure even if the previous quiet report is fresh',async()=>{

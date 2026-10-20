@@ -35,8 +35,8 @@ class AcousticKeywords(unittest.TestCase):
     def test_templates_still_require_preceding_stop_pause(self):
         result = {'acoustic': {'wake': True, 'stop': True}}
         self.assertTrue(acoustic_accept(result, 'wake', 0))
-        self.assertFalse(acoustic_accept(result, 'stop', .8))
-        self.assertTrue(acoustic_accept(result, 'stop', 1.))
+        self.assertFalse(acoustic_accept(result, 'stop', .3))
+        self.assertTrue(acoustic_accept(result, 'stop', .35))
         self.assertFalse(acoustic_accept({'acoustic': {'stop': 'true'}}, 'stop', 2))
 
     def test_bank_rejects_competing_class_and_corrupted_features(self):

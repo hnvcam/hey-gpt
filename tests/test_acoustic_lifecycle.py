@@ -3,7 +3,6 @@ import json
 import os
 from pathlib import Path
 import sys
-import time
 import tempfile
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
@@ -23,10 +22,9 @@ class AcousticLifecycle(unittest.IsolatedAsyncioTestCase):
             listener.phase='conversation'
             listener.session='voice-one'
             listener.voice_events={'playback_state':'quiet'}
-            listener.remote_audio_updated=time.monotonic()
             browser=Mock();browser.is_closing.return_value=False
             decoder=lambda _: {'text':'đan','result':[{'word':'đan','conf':.5}], 'acoustic':{'wake':False,'stop':True}}
-            await listener.recognize('wav2vec2',decoder,Utterance(b'\0'*16000,.8,500,False),browser,'7',listener.recognition_context())
+            await listener.recognize('wav2vec2',decoder,Utterance(b'\0'*16000,.3,500,False),browser,'7',listener.recognition_context())
             browser.write.assert_not_called()
             await listener.recognize('wav2vec2',decoder,Utterance(b'\0'*16000,1.2,500,False),browser,'7',listener.recognition_context())
             events=[json.loads(c.args[0]) for c in browser.write.call_args_list]

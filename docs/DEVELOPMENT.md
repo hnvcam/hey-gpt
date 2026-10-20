@@ -13,6 +13,7 @@ from there. Rerun `install.py` after relocating the project.
 | Component | Files/directories |
 | --- | --- |
 | Service, microphone coordination, conversation state | `daemon.py`, `audio_control.py`, `conversation_idle.py` |
+| Shared bilingual command vocabulary, matching and actions | `commands.py` and `Listener.apply_recognized_command` in `daemon.py` |
 | Vietnamese recognition and acoustic matching | `wake_worker.py`, `wav2vec_recognizer.py`, `voice_activity.py`, `wake_words.py`, `acoustic_keywords.py` |
 | English/Vietnamese dictation and Unicode paste | `dictation.py`, `parakeet_worker.py`, `vietnamese_dictation.py`, `vietnamese_worker.py`, `keyboard_input.py`, `native/` |
 | Local controls and Chrome bridge | `hey_gpt_ctl.py`, `native_host.py` |
@@ -38,10 +39,21 @@ Missing counters, stalled networks, ambiguous peers, and stale reports mean
 unknown activity and keep the call open. DOM markers may change when ChatGPT
 updates. Without a clear completion marker and confirmed quiet audio, the idle
 timer does not start. Completed text cannot override audio still playing.
-Immediately before closing, the extension requests a fresh activity sample and
-checks for 15 continuous idle seconds. Renewed activity cancels closing.
+Immediately before an automatic idle close, the extension requests a fresh
+activity sample and checks for 15 continuous idle seconds. Renewed activity
+cancels that automatic close. Explicit spoken end commands have priority: they
+click End Voice without consulting playback or reply activity.
 `last_voice_stop` in status/journal records the stop reason and activity flags,
 without speech content.
+
+All command audio uses one energy-assisted utterance gate with a 0.35-second
+pause/tail and reaches both local language decoders through `submit_commands`.
+`commands.py` owns normalization, confidence checks, start phrases and the shared
+end vocabulary; decoders provide evidence to `recognize_command`.
+`apply_recognized_command` rechecks freshness and the unlocked desktop session,
+then routes starts or stops once. End commands close Voice or finish the active
+dictation regardless of its language. Dictation final cleanup uses the same end
+vocabulary. Idle-timeout audio checks do not gate explicit end commands.
 
 After Voice has closed, a page stuck for more than 15 seconds may be reloaded
 once, provided there is no draft, recording, or error/limit notice. Recovery does
