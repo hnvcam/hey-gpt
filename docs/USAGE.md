@@ -32,8 +32,8 @@ or **“done”** as a separate utterance. These words inside a longer sentence 
 not count as stop commands. Local stop commands are accepted only after ChatGPT
 audio has stopped; keywords captured while ChatGPT speaks are ignored to avoid
 speaker audio ending the call. To interrupt immediately, use **End Voice** or
-the tray's **Tắt trợ lý và kết thúc Voice** (“Turn off the assistant and end Voice”).
-The latter also turns off local listening.
+clear **Bật trợ lý** in the tray menu. The latter also turns off local listening
+and unloads all models.
 
 Voice also closes after **15 seconds** with no further user speech, once the
 interface has completed the reply and Voice audio is confirmed quiet. The timer
@@ -65,9 +65,9 @@ Hearing means sound was detected; it does not mean English dictation has started
 No desktop state depends on color. The Chrome popup separately reports the
 listener state, microphone status, browser state, and any problem needing attention.
 
-Use **Tắt trợ lý và kết thúc Voice** to turn the assistant off. Hiding the icon
+Clear **Bật trợ lý** in the tray menu to turn the assistant off. Hiding the icon
 or closing Chrome does not turn off the local microphone. Locking the screen
-stops listening; after unlocking, enable it again through the GPT menu. If the
+stops listening and unloads models; after unlocking, enable it again through the GPT menu. If the
 browser connection is lost, check Chrome's microphone/Voice state yourself.
 
 ## Local controls
@@ -77,13 +77,19 @@ Run these from the project root:
 | Command | Action |
 | --- | --- |
 | `python3 hey_gpt_ctl.py status` | Show local listener and browser status |
-| `python3 hey_gpt_ctl.py enable` | Enable local listening without opening Chrome |
-| `python3 hey_gpt_ctl.py disable` | Stop local listening and request the end of Voice |
-| `python3 hey_gpt_ctl.py disarm` | Stop local listening only |
+| `python3 hey_gpt_ctl.py enable` | Load all models and listen without opening Chrome |
+| `python3 hey_gpt_ctl.py disable` | Stop listening, unload all models and request the end of Voice |
+| `python3 hey_gpt_ctl.py disarm` | Stop local listening and unload all models |
 | `python3 hey_gpt_ctl.py wake` | Manually trigger the Chrome/ready-cue flow once |
 
 The manual wake requires an enabled listener and an unlocked screen. It simulates
 a wake command; it does not verify spoken wake recognition.
+
+Choose **Cài đặt → Tự động bắt đầu nghe khi khởi động** to control automatic
+listening and model loading together. Turning it off stops listening and unloads
+all models immediately; later logins keep models unloaded. Turning it on loads
+the models and starts listening immediately. The menu's assistant on/off controls
+only the current session and always loads/unloads models with listening.
 
 To stop both services and disable automatic startup at login:
 

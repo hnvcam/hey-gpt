@@ -212,6 +212,8 @@ class Listener:
         # completed unload visible after that acknowledgement arrives.
         if detail == 'user-disarmed' and self.detail == 'models-unloaded':
             detail = 'models-unloaded'
+        self.enabled = False
+        self.recognition_epoch += 1
         await self.cancel_dictation()
         self.reply_guard.reset()
         self.wake_id = None
@@ -220,18 +222,23 @@ class Listener:
                 job.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await job
-        self.enabled = False
-        self.recognition_epoch += 1
-        if self.task:
+        if self.task and self.task is not asyncio.current_task():
             self.task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self.task
         self.task, self.owner = None, None
         self.phase, self.session = "wake", None
+        self.publish("DISARMED", "unloading-models")
+        await self.release_models()
         if detail in BROWSER_ERRORS:
             self.last_error = {"code": detail, "at": int(time.time())}
             print(json.dumps({"event":"browser-error", **self.last_error}), flush=True)
-        self.publish("DISARMED", detail)
+        self.publish("DISARMED", "models-unloaded" if detail in {
+            "user-disarmed", "unloading-models", "models-unloaded"} else detail)
+
+    async def startup(self):
+        if self.dictation_settings['auto_listen']:
+            await self.arm()
 
     async def arm(self, writer=None):
         if self.task and not self.task.done():
@@ -246,6 +253,7 @@ class Listener:
         self.browser_state = "IDLE"
         self.phase, self.session = "wake", None
         self.phase_since = time.monotonic()
+        self.publish("ARMING", "loading-offline-model")
         self.task = asyncio.create_task(self.listen(None, sid))
 
     async def launch_browser(self):
@@ -344,8 +352,10 @@ class Listener:
             await self.disarm(reason if reason in BROWSER_ERRORS else "user-disarmed")
             if self.browser and action == "disable":
                 self.send(self.browser, {"type": "control", "action": "disable"})
-        elif action == "enable":
+        elif action == "enable" or (action == 'model-load' and writer is not self.browser):
             await self.arm()
+        elif action == 'model-unload' and writer is not self.browser:
+            await self.unload_models()
         elif action == 'wake':
             # Same-user manual fallback follows the same fresh-wake rules. This
             # command is deliberately absent from the extension/native protocol.
@@ -354,7 +364,7 @@ class Listener:
                 await self.begin_wake()
             else:
                 self.send(writer, {'type': 'error', 'detail': 'assistant-not-listening'})
-        elif action in {'typing', 'model-load', 'model-unload', 'dictation-settings', 'reload-typing-templates'} and writer is not self.browser:
+        elif action in {'typing', 'settings', 'dictation-settings', 'reload-typing-templates'} and writer is not self.browser:
             if action == 'reload-typing-templates':
                 try:
                     if not self.wav2vec:raise RuntimeError('wake-model-not-ready')
@@ -362,16 +372,19 @@ class Listener:
                     self.publish(self.state,self.detail,self.mic)
                 except Exception:
                     self.send(writer,{'type':'error','detail':'typing-templates-reload-failed'})
-            elif action == 'dictation-settings':
+            elif action in {'settings', 'dictation-settings'}:
+                previous = self.dictation_settings['auto_listen']
                 try:
                     self.dictation_settings = save_settings(msg.get('settings'))
                 except (ValueError, OSError):
                     self.send(writer, {'type':'error','detail':'invalid-or-unwritable-dictation-settings'})
+                    return
+                if self.dictation_settings['auto_listen'] != previous:
+                    if self.dictation_settings['auto_listen']:
+                        await self.arm()
+                    else:
+                        await self.unload_models()
                 self.publish(self.state,self.detail,self.mic)
-            elif action == 'model-load':
-                self.start_model_load()
-            elif action == 'model-unload':
-                await self.unload_models()
             elif self.enabled and self.mic and self.phase=='wake' and await unlocked_session():
                 self.begin_dictation()
             else:
@@ -471,9 +484,15 @@ class Listener:
 
     async def prepare_english(self):
         self.english_state='loading'
+        loading = asyncio.create_task(asyncio.to_thread(EnglishCommands, BASE/'models/vosk-model-small-en-us-0.15'))
         try:
-            self.english=await asyncio.to_thread(EnglishCommands,BASE/'models/vosk-model-small-en-us-0.15')
+            self.english=await asyncio.shield(loading)
             self.english_state='ready'
+        except asyncio.CancelledError:
+            # A thread cannot be cancelled. Let construction finish and discard
+            # its result before acknowledging Off, so Vosk cannot appear later.
+            await asyncio.gather(loading, return_exceptions=True)
+            raise
         except Exception:
             self.english_state='unavailable'
         self.publish(self.state,self.detail,self.mic)
@@ -754,10 +773,12 @@ class Listener:
         await self.disarm('unloading-models')
         if self.browser:
             self.send(self.browser, {'type':'control', 'action':'disable'})
+
+    async def release_models(self):
         # Invalidate and cancel every producer before terminating either worker.
         jobs = {job for job in (*self.recognition_jobs, self.english_job,
-                                self.wav2vec_loading, self.model_task)
-                if job and not job.done()}
+                                self.wav2vec_loading, self.english_loading, self.model_task)
+                if job and job is not asyncio.current_task() and not job.done()}
         for job in jobs:
             job.cancel()
         if jobs:
@@ -766,12 +787,14 @@ class Listener:
             await asyncio.to_thread(self.wake_worker.close)
         self.wake_worker = self.wav2vec = self.vad = None
         self.wav2vec_loading = None
+        self.english = self.english_loading = None
+        self.english_state = 'not-loaded'
         self.engine_busy.clear()
         self.engines['wav2vec2'].update(state='unloaded',
                                          device=None, templates=False)
         await self.parakeet.unload()
+        await self.close_keyboard()
         self.dictation_error = None
-        self.publish('DISARMED', 'models-unloaded')
 
     async def prepare_wav2vec(self):
         self.engines["wav2vec2"]["state"] = "loading"
@@ -878,6 +901,7 @@ class Listener:
 
     async def listen(self, writer, sid):
         proc = None
+        cancelled = False
         try:
             self.publish("ARMING", "loading-offline-model")
             if self.english is None and (not self.english_loading or self.english_loading.done()):
@@ -886,6 +910,13 @@ class Listener:
                 self.engines["wav2vec2"]["state"] = "ready"
             if self.wav2vec is None and (not self.wav2vec_loading or self.wav2vec_loading.done()):
                 self.wav2vec_loading = asyncio.create_task(self.prepare_wav2vec())
+            # Models and listening share one lifecycle, including manual Enable.
+            loads = [job for job in (self.wav2vec_loading, self.english_loading,
+                                     self.start_model_load()) if job]
+            await asyncio.gather(*(asyncio.shield(job) for job in loads))
+            if (self.wav2vec is None or self.vad is None or self.english is None
+                    or self.parakeet.state != 'ready'):
+                raise RuntimeError('models-not-ready')
             if not await unlocked_session(sid):
                 raise RuntimeError("screen-locked-or-session-unavailable")
             args = ["parec", "--raw", "--format=s16le", "--rate=16000", "--channels=1",
@@ -958,13 +989,14 @@ class Listener:
                 self.check_inactivity(writer, now)
             self.detail = "listener-expired"
         except asyncio.CancelledError:
+            cancelled = True
             self.detail = "cancelled"
             raise
         except Exception as exc:
             trace_error('daemon','listener-error',exc,phase=self.phase)
             self.detail = str(exc) if str(exc) in {
                 "microphone-unavailable", "screen-locked-or-session-unavailable",
-                "browser-transition-timeout", "recognizers-unavailable"} else "model-or-audio-error"
+                "browser-transition-timeout", "recognizers-unavailable", "models-not-ready"} else "model-or-audio-error"
         finally:
             if proc and proc.returncode is None:
                 with contextlib.suppress(ProcessLookupError):
@@ -977,6 +1009,8 @@ class Listener:
             await self.cancel_dictation()
             self.enabled = False
             self.phase, self.session = "wake", None
+            if not cancelled:
+                await self.release_models()
             self.publish("DISARMED", self.detail)
             self.owner = None
 
@@ -1026,12 +1060,7 @@ async def main(args):
     listener.publish("DISARMED", "service-ready-microphone-closed")
     server = await asyncio.start_unix_server(listener.handle, path=str(path), limit=MAX_FRAME)
     path.chmod(0o600)
-    # Warm the GPU and start local wake listening independently of Chrome.
-    listener.wav2vec_loading = asyncio.create_task(listener.prepare_wav2vec())
-    listener.english_loading=asyncio.create_task(listener.prepare_english())
-    if listener.dictation_settings['autoload']:listener.start_model_load()
-    if args.auto_listen:
-        await listener.arm()
+    await listener.startup()
     stop = asyncio.Event()
     for sig in (signal.SIGINT, signal.SIGTERM):
         asyncio.get_running_loop().add_signal_handler(sig, stop.set)
@@ -1050,23 +1079,13 @@ async def main(args):
         for writer in clients:
             with contextlib.suppress(ConnectionError, asyncio.TimeoutError):
                 await asyncio.wait_for(writer.wait_closed(), 2)
-    if listener.model_task and not listener.model_task.done():
-        listener.model_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):await listener.model_task
-    await listener.parakeet.unload()
-    if listener.wav2vec_loading and not listener.wav2vec_loading.done():
-        listener.wav2vec_loading.cancel()
-        with contextlib.suppress(asyncio.CancelledError):await listener.wav2vec_loading
-    if listener.wake_worker:
-        await asyncio.to_thread(listener.wake_worker.close)
-    if listener.keyboard and listener.keyboard.returncode is None:
-        listener.keyboard.terminate();await listener.keyboard.wait()
     path.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--auto-listen", action="store_true", help="Listen locally on service startup, without Chrome")
+    # Accepted for existing installed units. The saved preference is authoritative.
+    parser.add_argument("--auto-listen", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--source", help="PulseAudio/PipeWire source name; default source otherwise")
     parser.add_argument("--max-seconds", type=int, default=0, help="0: listen until disabled or locked")
     parser.add_argument("--silence-seconds", type=float, default=15, help="Voice inactivity timeout; 0 keeps Voice open until a stop command")

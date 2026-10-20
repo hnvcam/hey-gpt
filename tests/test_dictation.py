@@ -59,12 +59,12 @@ class AudioAndSettings(unittest.TestCase):
 
     def test_settings_persist_and_reject_bad_types(self):
         with tempfile.TemporaryDirectory() as folder,patch.dict(os.environ,{'XDG_CONFIG_HOME':folder}):
-            self.assertEqual(load_settings(),{'autoload':True,'silence_seconds':5,'show_transcript':True})
-            save_settings({'autoload':False,'silence_seconds':10,'show_transcript':True})
-            self.assertEqual(load_settings(),{'autoload':False,'silence_seconds':10,'show_transcript':True})
-            save_settings({'autoload':True,'silence_seconds':7,'show_transcript':False})
-            self.assertEqual(load_settings(),{'autoload':True,'silence_seconds':7,'show_transcript':False})
-        for bad in ({'autoload':'no'},{'silence_seconds':True},{'silence_seconds':0},
+            self.assertEqual(load_settings(),{'auto_listen':True,'silence_seconds':5,'show_transcript':True})
+            save_settings({'auto_listen':False,'silence_seconds':10,'show_transcript':True})
+            self.assertEqual(load_settings(),{'auto_listen':False,'silence_seconds':10,'show_transcript':True})
+            save_settings({'auto_listen':True,'silence_seconds':7,'show_transcript':False})
+            self.assertEqual(load_settings(),{'auto_listen':True,'silence_seconds':7,'show_transcript':False})
+        for bad in ({'auto_listen':'no'},{'silence_seconds':True},{'silence_seconds':0},
                     {'show_transcript':'yes'},{'extra':1}):
             with self.assertRaises(ValueError):validate_settings(bad)
 
@@ -160,9 +160,9 @@ class Lifecycle(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.listener.recording);self.assertEqual(self.listener.phase,'wake')
         await self.listener.dispatch({'cmd':'disarm'},self.listener.browser)
         self.assertEqual(self.listener.detail,'models-unloaded')
-        await self.listener.dispatch({'cmd':'model-load'},self.writer)
-        await self.listener.model_task
-        self.assertNotEqual(self.listener.detail,'models-unloaded')
+        with patch.object(self.listener, 'arm', AsyncMock()) as arm:
+            await self.listener.dispatch({'cmd':'model-load'},self.writer)
+            arm.assert_awaited_once()
 
     async def test_unload_cancels_startup_load_and_stale_recognition(self):
         entered=asyncio.Event()

@@ -34,7 +34,8 @@ def display(status):
     if status.get('enabled'):return 'waiting','Đang chờ kết nối…'
     details={'screen-locked-or-session-unavailable':'Đã tạm dừng · phiên làm việc bị khóa',
              'model-or-audio-error':'Lỗi mô hình hoặc micro · đã tạm dừng',
-             'microphone-unavailable':'Không truy cập được micro · đã tạm dừng'}
+             'microphone-unavailable':'Không truy cập được micro · đã tạm dừng',
+             'models-not-ready':'Không nạp đủ mô hình · đã tắt và gỡ mô hình; xem log dịch vụ'}
     return 'off',details.get(detail,'Trợ lý đã tắt · micro đã đóng')
 
 

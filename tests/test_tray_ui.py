@@ -22,7 +22,7 @@ class TrayUI(unittest.TestCase):
         self.app.action=Mock()
         self.status={'enabled':False,'state':'DISARMED','detail':'models-unloaded',
                      'dictation':{'state':'unloaded','commands':'ready',
-                                  'settings':{'autoload':True,'silence_seconds':5,'show_transcript':True}},
+                                  'settings':{'auto_listen':True,'silence_seconds':5,'show_transcript':True}},
                      'recognizers':{'wav2vec2':{'state':'unloaded'}}}
         self.app.update(self.status)
 
@@ -42,18 +42,21 @@ class TrayUI(unittest.TestCase):
         self.app.update(self.status)
         self.app.action.assert_not_called()
 
-    def test_unload_remains_clickable_when_already_unloaded(self):
+    def test_one_startup_switch_replaces_independent_model_controls(self):
         self.app.show_window()
-        self.assertTrue(self.app.unload_button.get_sensitive())
-        self.app.unload_button.clicked()
-        self.app.action.assert_called_once_with('model-unload')
+        self.assertTrue(self.app.auto_listen.get_sensitive())
+        self.assertFalse(hasattr(self.app, 'load_button'))
+        self.assertFalse(hasattr(self.app, 'unload_button'))
+        self.app.auto_listen.set_active(False)
+        self.app.action.assert_called_once_with('settings', {'settings':{
+            'auto_listen':False,'silence_seconds':5,'show_transcript':True}})
 
     def test_transcript_setting_is_editable_and_sent_with_other_preferences(self):
         self.app.show_window()
         self.assertTrue(self.app.transcript.get_sensitive())
         self.app.transcript.set_active(False)
-        self.app.action.assert_called_once_with('dictation-settings',{'settings':{
-            'autoload':True,'silence_seconds':5,'show_transcript':False}})
+        self.app.action.assert_called_once_with('settings',{'settings':{
+            'auto_listen':True,'silence_seconds':5,'show_transcript':False}})
 
     def test_transcript_visibility_follows_saved_preference(self):
         status=copy.deepcopy(self.status)
@@ -67,7 +70,7 @@ class TrayUI(unittest.TestCase):
     def test_offline_settings_show_connection_state(self):
         self.app.update(None);self.app.show_window()
         self.assertFalse(self.app.enabled_item.get_sensitive())
-        self.assertFalse(self.app.unload_button.get_sensitive())
+        self.assertFalse(self.app.auto_listen.get_sensitive())
         self.assertFalse(self.app.transcript.get_sensitive())
         self.assertIn('kết nối',self.app.dictation_label.get_text())
 

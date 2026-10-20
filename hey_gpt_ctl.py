@@ -8,8 +8,9 @@ import socket
 import subprocess
 
 parser = argparse.ArgumentParser()
-parser.add_argument("command", choices=("status", "enable", "disable", "disarm", "wake", "typing", "model-load", "model-unload", "dictation-settings", "reload-typing-templates", "logs"), default="status", nargs="?")
-parser.add_argument('--autoload',choices=('on','off'))
+parser.add_argument("command", choices=("status", "enable", "disable", "disarm", "wake", "typing", "settings", "model-load", "model-unload", "dictation-settings", "reload-typing-templates", "logs"), default="status", nargs="?")
+parser.add_argument('--auto-listen',choices=('on','off'),help='Save automatic startup listening; On loads all models and listens, Off stops and unloads')
+parser.add_argument('--autoload',dest='auto_listen',choices=('on','off'),help=argparse.SUPPRESS)
 parser.add_argument('--silence',type=int)
 parser.add_argument('--follow',action='store_true',help='Follow local diagnostic logs')
 args = parser.parse_args()
@@ -20,7 +21,7 @@ if args.command=='logs':
 path = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")) / "hey-gpt/control.sock"
 try:
     with socket.socket(socket.AF_UNIX) as sock:
-        sock.settimeout(10 if args.command=='model-unload' else 5)
+        sock.settimeout(15 if args.command in {'disable','disarm','model-unload','settings','dictation-settings'} else 5)
         sock.connect(str(path))
         reader = sock.makefile("rb")
         initial = json.loads(reader.readline())
@@ -28,9 +29,9 @@ try:
             print(json.dumps(initial, ensure_ascii=False, indent=2))
         else:
             message={'cmd':args.command,'request':'cli'}
-            if args.command=='dictation-settings':
+            if args.command in {'settings','dictation-settings'}:
                 settings=initial['dictation']['settings']
-                if args.autoload is not None:settings['autoload']=args.autoload=='on'
+                if args.auto_listen is not None:settings['auto_listen']=args.auto_listen=='on'
                 if args.silence is not None:settings['silence_seconds']=args.silence
                 message['settings']=settings
             sock.sendall(json.dumps(message).encode()+b'\n')

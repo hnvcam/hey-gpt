@@ -63,8 +63,11 @@ to the actual source, then run:
 
 The installer registers the Chrome native messaging bridge, creates two systemd
 user services, enables them, and restarts them. The local listener starts
-automatically at login or service restart in an unlocked Wayland session. It
-does not open the control panel or Chrome at startup.
+automatically at login or service restart in an unlocked Wayland session when
+**Tự động bắt đầu nghe khi khởi động** is enabled in Settings (the default).
+That one preference controls listening and all model loading together. When it
+is off, startup leaves the microphone closed and every model unloaded. The
+application does not open the control panel or Chrome at startup.
 
 Installed paths are derived from this project root. After moving the project,
 run the installer again and reload the extension from its new `extension/` path.
@@ -88,7 +91,9 @@ are in another profile. It reads only the profile name, without cookies or token
 No OpenAI key is required. Your ChatGPT plan and Voice limits still apply;
 the application does not bypass limits or automatically retry Voice after errors.
 
-## Optional English dictation
+## English dictation models
 
-Follow [English dictation setup](DICTATION.md#setup) after installing the listener.
-It adds an isolated transcription runtime and requires desktop keyboard-device access.
+Complete [English dictation setup](DICTATION.md#setup) to install English Vosk and
+the isolated Parakeet runtime, then restart the listener. Enabling listening loads
+all models together; if a model is missing or fails, the assistant stops and
+unloads the other models. Keyboard dictation also requires desktop keyboard-device access.

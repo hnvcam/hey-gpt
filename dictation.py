@@ -19,15 +19,18 @@ def settings_path():
 
 
 def validate_settings(value):
-    if not isinstance(value, dict) or set(value)-{'autoload', 'silence_seconds', 'show_transcript'}:
+    if not isinstance(value, dict) or set(value)-{'auto_listen', 'autoload', 'silence_seconds', 'show_transcript'}:
         raise ValueError('invalid-dictation-settings')
-    autoload=value.get('autoload', True)
+    # Migrate the former dictation-only preload preference into the single
+    # startup preference. Never keep two independent model/listening switches.
+    auto_listen=value.get('auto_listen', value.get('autoload', True))
     silence=value.get('silence_seconds', 5)
     show_transcript=value.get('show_transcript', True)
-    if (type(autoload) is not bool or type(show_transcript) is not bool
+    if (type(auto_listen) is not bool or ('autoload' in value and type(value['autoload']) is not bool)
+            or type(show_transcript) is not bool
             or type(silence) is not int or not 2<=silence<=30):
         raise ValueError('invalid-dictation-settings')
-    return {'autoload':autoload, 'silence_seconds':silence, 'show_transcript':show_transcript}
+    return {'auto_listen':auto_listen, 'silence_seconds':silence, 'show_transcript':show_transcript}
 
 
 def load_settings():

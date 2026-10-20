@@ -72,37 +72,41 @@ Drafts stay in memory and are delivered only to the local tray, never in status
 broadcasts, status files, browser messages or logs. Finishing, cancellation,
 screen lock and Unload clear the draft.
 
-## Model controls
+## Listening and models
 
-Open **Cài đặt…** from the tray menu. All model controls and preferences live here:
-**Nạp bộ nhập tiếng Anh**, **Nạp sẵn bộ nhập tiếng Anh khi khởi động**,
-**Hiện bảng văn bản khi nhập giọng nói**, the silence timeout, and
-**Giải phóng bộ nhớ GPU**. Transcript visibility defaults to on and is saved
-alongside the other dictation preferences. The board appears automatically during
-recording; it is not an unavailable menu action while idle.
+Open **Cài đặt… → Tự động bắt đầu nghe khi khởi động** from the tray menu.
+This is the single startup preference for listening and models:
 
-**Giải phóng bộ nhớ GPU** pauses local listening, requests the end of active Chrome
-Voice, cancels dictation and terminates both GPU workers: Parakeet and Vietnamese
-Wav2Vec2/Silero. It stays available while the service is connected; repeating it
-when the models are already unloaded is harmless. The status says **Đã giải phóng
-GPU**. Turn the assistant on to reload wake listening. English Vosk stays loaded
-on CPU and can confirm “typing this” to load Parakeet after listening resumes.
-Changing the startup preference affects the next service start.
+- On loads Vietnamese Wav2Vec2/Silero, English Vosk and Parakeet, then starts
+  listening. It also starts listening on later logins and service restarts.
+- Off stops listening, requests the end of Voice, cancels dictation and unloads
+  all models, including English Vosk on CPU. Later service starts stay unloaded.
 
-**Chi tiết bộ nhận giọng** lists each active component accurately: Vietnamese
-Wav2Vec2 on GPU for wake/stop phrases; English Vosk on CPU for dictation commands;
-Parakeet on GPU for English transcription; and Silero on GPU for speech activity.
-The obsolete Vietnamese Vosk branch has been removed. English Vosk remains in use.
+Changes apply immediately and are saved. The tray's **Bật trợ lý** and Chrome's
+on/off buttons control the current session: enabling loads all models; disabling
+unloads them. These temporary controls do not change the startup preference.
+There are no separate preload or GPU-unload settings. Old `model-load` and
+`model-unload` commands are compatibility aliases for enabling and disabling.
+
+All models must be ready before the microphone opens. A model or microphone
+failure stops listening and releases all models, without automatically retrying.
+The former `autoload` preference migrates to the single startup preference.
+
+Transcript visibility and the dictation silence timeout remain under English
+dictation settings. **Chi tiết bộ nhận giọng** shows Vietnamese Wav2Vec2 on GPU,
+English Vosk on CPU, Parakeet on GPU and Silero on GPU.
 
 ## Local controls
 
 These controls use the same-user socket and are unavailable to the Chrome extension.
 
 ```sh
-python3 hey_gpt_ctl.py model-load
-python3 hey_gpt_ctl.py model-unload
-python3 hey_gpt_ctl.py dictation-settings --autoload on --silence 10
-python3 hey_gpt_ctl.py typing  # manual equivalent of the spoken trigger
+python3 hey_gpt_ctl.py settings --auto-listen on
+python3 hey_gpt_ctl.py settings --auto-listen off
+python3 hey_gpt_ctl.py settings --silence 10
+python3 hey_gpt_ctl.py enable   # load all models and listen for this session
+python3 hey_gpt_ctl.py disable  # stop and unload all models
+python3 hey_gpt_ctl.py typing   # manual equivalent of the spoken trigger
 ```
 
 ## Command recognition

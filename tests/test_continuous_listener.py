@@ -20,6 +20,12 @@ class ContinuousListener(unittest.IsolatedAsyncioTestCase):
             listener.wav2vec=Mock()
             listener.vad=Mock(speech=False,probability=0.)
             listener.vad.feed.return_value=False
+            vad=listener.vad
+            listener.english=Mock()
+            listener.parakeet=Mock(state='ready',error=None)
+            listener.parakeet.load=AsyncMock()
+            listener.parakeet.unload=AsyncMock()
+            listener.parakeet.snapshot.return_value={'state':'ready','error':None}
             browser=Mock();browser.is_closing.return_value=False
             listener.browser=browser
             proc=Mock(returncode=None)
@@ -44,8 +50,8 @@ class ContinuousListener(unittest.IsolatedAsyncioTestCase):
                 await listener.listen(browser,'7')
             self.assertEqual(spawn.await_count,1)
             self.assertEqual(listener.capture_starts,1)
-            listener.vad.reset.assert_called_once()
-            self.assertEqual(listener.vad.feed.call_count,5)
+            vad.reset.assert_called_once()
+            self.assertEqual(vad.feed.call_count,5)
 
     async def test_busy_wake_is_deferred_without_cancelling_microphone_task(self):
         with tempfile.TemporaryDirectory() as directory,patch.dict(os.environ,{'XDG_RUNTIME_DIR':directory}):

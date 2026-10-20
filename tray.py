@@ -23,7 +23,7 @@ SOCKET=Path(os.environ.get('XDG_RUNTIME_DIR',f'/run/user/{os.getuid()}'))/'hey-g
 
 def exchange(cmd, payload=None):
     with socket.socket(socket.AF_UNIX) as sock:
-        sock.settimeout(10 if cmd=='model-unload' else 2)
+        sock.settimeout(15 if cmd in {'disable','disarm','model-unload','settings','dictation-settings'} else 2)
         sock.connect(str(SOCKET))
         reader=sock.makefile('rb')
         first=json.loads(reader.readline())
@@ -207,21 +207,17 @@ class App:
                 'loading':'Đang nạp bộ nhập tiếng Anh…', 'transcribing':'Đang chuyển giọng nói thành văn bản…'}
         self.dictation_label.set_text('Không kết nối được dịch vụ' if not status else
             'Lỗi nhập giọng nói · xem phần Chi tiết' if info.get('error') else labels.get(model,'Bộ nhập tiếng Anh chưa sẵn sàng'))
-        self.load_button.set_visible(bool(status) and model not in {'loading','ready','transcribing'})
-        self.unload_button.set_sensitive(bool(status))
-        self.gpu_note.set_text('Bộ nhớ GPU đã được giải phóng.' if (status or {}).get('detail')=='models-unloaded'
-                              else 'Tạm dừng trợ lý, kết thúc Voice và gỡ toàn bộ mô hình khỏi GPU.')
-        settings=info.get('settings',{'autoload':True,'silence_seconds':5})
+        settings=info.get('settings',{'auto_listen':True,'silence_seconds':5})
         self.updating_settings=True
-        self.autoload.set_active(settings['autoload'])
+        self.auto_listen.set_active(settings['auto_listen'])
         self.silence.set_value(settings['silence_seconds'])
         self.transcript.set_active(settings.get('show_transcript',True))
-        for widget in (self.autoload,self.silence,self.transcript):widget.set_sensitive(bool(status))
+        for widget in (self.auto_listen,self.silence,self.transcript):widget.set_sensitive(bool(status))
         self.updating_settings=False
 
     def dictation_settings_changed(self,*args):
         if self.updating_settings:return
-        self.action('dictation-settings',{'settings':{'autoload':self.autoload.get_active(),
+        self.action('settings',{'settings':{'auto_listen':self.auto_listen.get_active(),
                                                      'silence_seconds':self.silence.get_value_as_int(),
                                                      'show_transcript':self.transcript.get_active()}})
 
@@ -249,14 +245,16 @@ class App:
         self.status_label=self.note(box,display(self.status)[1])
         self.feedback=self.note(box,self.action_error or '')
 
+        listening=self.section(box,'Nghe tự động')
+        self.updating_settings=True
+        self.auto_listen=Gtk.CheckButton(label='Tự động bắt đầu nghe khi khởi động')
+        self.auto_listen.connect('toggled',self.dictation_settings_changed)
+        listening.pack_start(self.auto_listen,False,False,0)
+        self.note(listening,'Bật: nạp toàn bộ mô hình và bắt đầu nghe ngay, cũng như khi đăng nhập. Tắt: dừng nghe, kết thúc Voice và gỡ toàn bộ mô hình.')
+        self.note(listening,'Menu “Bật trợ lý” điều khiển phiên hiện tại: bật sẽ nạp mô hình, tắt sẽ gỡ mô hình.')
+
         typing=self.section(box,'Nhập giọng nói tiếng Anh')
         self.dictation_label=self.note(typing,'')
-        self.load_button=Gtk.Button(label='Nạp bộ nhập tiếng Anh')
-        self.load_button.connect('clicked',lambda *_:self.action('model-load'))
-        typing.pack_start(self.load_button,False,False,0)
-        self.updating_settings=True
-        self.autoload=Gtk.CheckButton(label='Nạp sẵn bộ nhập tiếng Anh khi khởi động')
-        self.autoload.connect('toggled',self.dictation_settings_changed);typing.pack_start(self.autoload,False,False,0)
         self.transcript=Gtk.CheckButton(label='Hiện bảng văn bản khi nhập giọng nói')
         self.transcript.connect('toggled',self.dictation_settings_changed);typing.pack_start(self.transcript,False,False,0)
         row=Gtk.Box(spacing=10);typing.pack_start(row,False,False,0)
@@ -264,12 +262,6 @@ class App:
         self.silence=Gtk.SpinButton.new_with_range(2,30,1)
         self.silence.connect('value-changed',self.dictation_settings_changed);row.pack_start(self.silence,False,False,0)
         row.pack_start(Gtk.Label(label='giây'),False,False,0)
-
-        gpu=self.section(box,'Bộ nhớ GPU')
-        self.unload_button=Gtk.Button(label='Giải phóng bộ nhớ GPU')
-        self.unload_button.connect('clicked',lambda *_:self.action('model-unload'));gpu.pack_start(self.unload_button,False,False,0)
-        self.gpu_note=self.note(gpu,'')
-        self.note(gpu,'Bật lại trợ lý từ menu để tiếp tục nghe.')
 
         help=Gtk.Expander(label='Cách sử dụng và kết nối Chrome')
         help_box=Gtk.Box(orientation=Gtk.Orientation.VERTICAL,spacing=10);help_box.set_border_width(10);help.add(help_box)

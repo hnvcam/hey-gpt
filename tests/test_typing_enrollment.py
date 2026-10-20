@@ -83,6 +83,7 @@ class PersonalRuntime(unittest.IsolatedAsyncioTestCase):
         self.listener.wav2vec=Mock(typing_templates=True);self.listener.wav2vec.match_typing.return_value=True
         self.listener.english=Mock()
         self.listener.parakeet=Mock(state='unloaded',error=None)
+        self.listener.parakeet.unload=AsyncMock()
         self.listener.parakeet.snapshot.return_value={'state':'unloaded','error':None}
         self.unlock=patch('daemon.unlocked_session',AsyncMock(return_value='7'));self.unlock.start()
     async def asyncTearDown(self):
