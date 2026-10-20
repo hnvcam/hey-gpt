@@ -52,7 +52,7 @@ def save_settings(value):
 ENGLISH_TRIGGERS = frozenset({'typing this', 'type this'})
 ENGLISH_STOPS = frozenset({'stop typing','end typing','typing end'})
 VIETNAMESE_TRIGGERS = frozenset({'nhập lệnh', 'gõ câu'})
-VIETNAMESE_STOPS = frozenset({'dừng nhập', 'ngừng nhập'})
+VIETNAMESE_STOPS = frozenset({'dừng nhập', 'ngừng nhập', 'hết', 'kết thúc'})
 STOP_PAUSE = .35
 
 
@@ -79,6 +79,17 @@ def command_match(result, phrases, minimum=.80):
     confirmed=result.get('grammar_confirmed')==text
     return (min(scores)>=minimum and sum(scores)/len(scores)>=.88 or
             confirmed and min(scores)>=.35 and sum(scores)/len(scores)>=.55)
+
+
+def vietnamese_command_match(result, starting):
+    phrases=VIETNAMESE_TRIGGERS if starting else VIETNAMESE_STOPS
+    if starting and result.get('vietnamese_acoustic',{}).get('typing_confirmed') is True:return True
+    personal=result.get('vietnamese_acoustic',{}).get('typing' if starting else 'typing-stop') is True
+    if command_match(result,phrases):return True
+    # The broader personal match needs lexical confirmation. A separately
+    # validated strict match above can recover a mis-transcribed command.
+    if not starting:return personal
+    return personal and command_text(result.get('text','')) in phrases
 
 
 def keyboard_text(text):

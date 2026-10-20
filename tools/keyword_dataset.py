@@ -45,7 +45,24 @@ def reading_plan():
             for n, (kind, text, hint, split, seconds) in enumerate(rows, 1)]
 
 
-def typing_plan():
+def typing_plan(language='en'):
+    if language=='vi':
+        rows=[('noise','','Giữ yên lặng; để tiếng ồn phòng như bình thường.','dev',8)]
+        phrases=[('typing','nhập lệnh'),('typing','gõ câu'),('typing-stop','dừng nhập'),
+                 ('typing-stop','ngừng nhập'),('typing-stop','hết'),('typing-stop','kết thúc')]
+        for take in range(5):
+            for kind,text in phrases:
+                rows.append((kind,text,'Chờ READ NOW, nói một lần bằng giọng thường ngày rồi nghỉ.',
+                             'dev' if take<3 else 'test',6))
+        for index,text in enumerate(('Tôi chưa nói hết.', 'Kết thúc câu này bằng một ví dụ.',
+                                    'Tôi muốn nhập lệnh sau khi đọc hướng dẫn.', 'Bạn gõ câu này vào đâu?',
+                                    'Đừng dừng nhập khi tôi vẫn đang nói.', 'Tôi chưa muốn ngừng nhập văn bản.',
+                                    'Hôm nay tôi có một câu hỏi.', 'Hey GPT')):
+            rows.append(('negative',text,'Đọc liền cả câu tự nhiên; không tách riêng từ khóa.',
+                         'dev' if index<4 else 'test',6))
+        rows.append(('noise','','Giữ yên lặng; gõ bàn phím vài giây như khi làm việc.','test',8))
+        return [dict(id=f'{i:02d}',kind=kind,text=text,hint=hint,split=split,seconds=seconds)
+                for i,(kind,text,hint,split,seconds) in enumerate(rows,1)]
     rows=[('noise','','Keep the usual room noise; do not speak.','dev',8)]
     phrases=[('typing','typing this'),('typing','type this'),('typing-stop','stop typing'),
              ('typing-stop','end typing'),('typing-stop','typing end')]
@@ -124,7 +141,7 @@ class Studio:
         self.root, self.sources = root, sources
         self.profile=profile
         self.paused=False
-        self.plan = typing_plan() if profile=='typing' else reading_plan()
+        self.plan = typing_plan('vi' if profile=='typing-vi' else 'en') if profile in {'typing','typing-vi'} else reading_plan()
         self.lock = threading.RLock()
         self.stop = threading.Event()
         self.session = None
@@ -138,7 +155,7 @@ class Studio:
         manifest=json.loads((session/'manifest.json').read_text())
         if manifest.get('profile','voice')!=self.profile:raise ValueError('Recording profile mismatch.')
         self.session,self.manifest=session,manifest
-        self.plan=manifest['plan'];self.paused=self.profile=='typing'
+        self.plan=manifest['plan'];self.paused=self.profile in {'typing','typing-vi'}
         report=session/'typing-report.json'
         self.set(phase='done',session=str(session),completed=sorted({c['prompt'] for c in manifest['clips']}),
                  report=json.loads(report.read_text()) if report.exists() else None,message='Your saved recordings are ready.')
@@ -163,7 +180,7 @@ class Studio:
             ids = [row['id'] for row in self.plan]
             if selection != 'all' and selection not in ids:
                 raise ValueError('Câu đọc không hợp lệ.')
-            if self.profile=='typing' and not self.paused:
+            if self.profile in {'typing','typing-vi'} and not self.paused:
                 control('disable');self.paused=True
             self.check_disarmed()
             if self.session is None:
@@ -229,7 +246,7 @@ class Studio:
             threading.Thread(target=self.run_evaluation, daemon=True).start()
 
     def run_evaluation(self):
-        if self.profile=='typing':return self.run_typing_training()
+        if self.profile in {'typing','typing-vi'}:return self.run_typing_training()
         try:
             command = [str(self.root / '.venv/bin/python'), '-B', str(Path(__file__).resolve()),
                        'evaluate', str(self.session)]
@@ -249,7 +266,8 @@ class Studio:
             if result.returncode:raise RuntimeError(result.stderr.decode(errors='replace')[-1000:])
             report=json.loads((self.session/'typing-report.json').read_text())
             if report['installed']:
-                control('reload-typing-templates')
+                # Recording disabled/unloaded all workers. Enable loads both
+                # banks from disk; hot reload cannot run while they are absent.
                 control('enable');self.paused=False
             message=('Your voice samples are active. The assistant is listening again.' if report['installed']
                      else ('Recording issues are listed below. Retry only those recordings.' if any(i.get('retry_recommended') for i in report.get('issues',[])) else 'Your recordings are saved. Recognition needs adjustment; no retake is required.'))
@@ -397,12 +415,19 @@ def serve(args):
     studio = Studio(ROOT, selected, args.profile)
     if args.session:studio.resume(args.session)
     token = secrets.token_urlsafe(24)
-    html = Path(__file__).with_name('typing_studio.html' if args.profile=='typing' else 'keyword_studio.html').read_text()
+    is_typing=args.profile in {'typing','typing-vi'}
+    html = Path(__file__).with_name('typing_studio.html' if is_typing else 'keyword_studio.html').read_text()
+    if args.profile=='typing-vi':
+        html=html.replace('Five recordings each of <b>typing this</b>, <b>type this</b>, <b>stop typing</b>, <b>end typing</b>, and <b>typing end</b>.',
+                          'Five recordings each of <b>nhập lệnh</b>, <b>gõ câu</b>, <b>dừng nhập</b>, <b>ngừng nhập</b>, <b>hết</b>, and <b>kết thúc</b>.')
+        html=html.replace('33 items','40 items').replace('Your voice · Dictation commands','Giọng của bạn · Lệnh nhập tiếng Việt')
     server = ThreadingHTTPServer(('127.0.0.1', 0), make_handler(studio, token, html))
     server.daemon_threads = True
     url = f'http://127.0.0.1:{server.server_port}/{token}/'
     runtime = Path(os.environ.get('XDG_RUNTIME_DIR', f'/run/user/{os.getuid()}')) / 'hey-gpt'
-    private_json(runtime / ('typing-studio.json' if args.profile=='typing' else 'recording-studio.json'), {'url': url, 'pid': os.getpid()})
+    runtime.mkdir(mode=0o700,parents=True,exist_ok=True)
+    info='vietnamese-typing-studio.json' if args.profile=='typing-vi' else 'typing-studio.json' if is_typing else 'recording-studio.json'
+    private_json(runtime/info, {'url': url, 'pid': os.getpid()})
     print(url, flush=True)
     # A hard lifetime also bounds forgotten local servers. Captures are shorter.
     timer = threading.Timer(3600, server.shutdown)
@@ -421,7 +446,7 @@ if __name__ == '__main__':
     commands = parser.add_subparsers(dest='command', required=True)
     recorder = commands.add_parser('serve')
     recorder.add_argument('--session',type=Path,help='Resume existing recordings without recording again')
-    recorder.add_argument('--profile', choices=('voice','typing'), default='voice')
+    recorder.add_argument('--profile', choices=('voice','typing','typing-vi'), default='voice')
     recorder.add_argument('--filtered', default='mic_noise_suppressed')
     recorder.add_argument('--raw', default='alsa_input.pci-0000_00_1f.3.analog-stereo')
     replay = commands.add_parser('evaluate')

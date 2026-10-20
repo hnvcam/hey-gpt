@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Hey GPT
+Comment=Start the local voice assistant and status indicator
+Exec=/usr/bin/systemctl --user start hey-gpt.service hey-gpt-tray.service
+Icon=@ICON@
+Terminal=false
+Categories=Utility;Accessibility;
+Keywords=Hey GPT;ChatGPT;Voice;Vietnamese;Dictation;
+StartupNotify=false

@@ -153,21 +153,32 @@ class Wav2VecVietnamese:
         template_path = Path(__file__).resolve().parent / 'data/keyword-templates'
         self.templates = TemplateBank(template_path, path, np) if template_path.exists() else None
         self.typing_templates = None
+        self.vietnamese_templates = None
         self.reload_typing_templates()
 
     def reload_typing_templates(self):
         folder=Path(__file__).resolve().parent/'data/typing-templates'
         bank=TemplateBank(folder,self.model_path,self.np) if folder.exists() else None
+        folder_vi=Path(__file__).resolve().parent/'data/vietnamese-typing-templates'
+        bank_vi=TemplateBank(folder_vi,self.model_path,self.np) if folder_vi.exists() else None
         self.typing_templates=bank
-        return len(bank.rows) if bank else 0
+        self.vietnamese_templates=bank_vi
+        return (len(bank.rows) if bank else 0)+(len(bank_vi.rows) if bank_vi else 0)
 
-    def match_typing(self, pcm, kind):
-        bank=self.typing_templates
+    def match_typing(self, pcm, kind, language='en', strict=False):
+        bank=self.vietnamese_templates if language=='vi' else self.typing_templates
         if bank is None:return False
         trimmed=trim_pcm(pcm,self.np)
         if not 8000<=len(trimmed)<=80000:return False
         features=self.acoustic_features(trimmed)
-        return bool(bank.match(features,kind,len(trimmed)/32000))
+        return self.typing_match(features,kind,len(trimmed)/32000,language,strict)
+
+    def typing_match(self, features, kind, seconds, language, strict=False):
+        bank=self.vietnamese_templates if language=='vi' else self.typing_templates
+        if bank is None:return False
+        competing=tuple(b for b in (self.templates,self.typing_templates,self.vietnamese_templates)
+                        if b is not None and b is not bank) if strict else ()
+        return bool(bank.match(features,kind,seconds,competing=competing,strict=strict))
 
     def acoustic_features(self, pcm):
         """Same CUDA model, fixed middle layer; no text conversion needed."""
@@ -190,12 +201,18 @@ class Wav2VecVietnamese:
             scores, ids = logits.softmax(dim=-1).max(dim=-1)
         result = ctc_words(ids.tolist(), scores.tolist(), self.processor.tokenizer,
                            self.model.config.pad_token_id)
-        if self.templates is not None:
+        if self.templates is not None or self.vietnamese_templates is not None:
             trimmed = trim_pcm(pcm, self.np)
             if 8000 <= len(trimmed) <= 80000:
                 features = self.acoustic_features(trimmed)
-                result['acoustic'] = {kind: bool(self.templates.match(features, kind, len(trimmed)/32000))
-                                      for kind in ('wake', 'stop')}
+                if self.templates is not None:
+                    result['acoustic'] = {kind: bool(self.templates.match(features, kind, len(trimmed)/32000))
+                                          for kind in ('wake', 'stop')}
+                if self.vietnamese_templates is not None:
+                    result['vietnamese_acoustic']={kind:bool(self.vietnamese_templates.match(features,kind,len(trimmed)/32000))
+                                                  for kind in ('typing','typing-stop')}
+                    result['vietnamese_acoustic']['typing_confirmed']=self.typing_match(
+                        features,'typing',len(trimmed)/32000,'vi',strict=True)
         return result
 
     def ctc_logits(self, pcm):

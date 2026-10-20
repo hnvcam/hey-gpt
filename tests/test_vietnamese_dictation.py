@@ -6,7 +6,7 @@ from pathlib import Path
 import unittest
 from unittest.mock import AsyncMock,Mock,patch
 from audio_control import Utterance
-from dictation import Recording,terminal_stop
+from dictation import Recording,terminal_stop,VIETNAMESE_STOPS,vietnamese_command_match
 from vietnamese_dictation import VietnameseDictation,acoustic_windows
 import test_dictation as fixtures
 from test_dictation import result
@@ -54,6 +54,43 @@ class VietnameseLifecycle(unittest.IsolatedAsyncioTestCase):
             await listener.dictation_job
             self.assertEqual(finish.await_args.args[0],b'a'*32000)
 
+    async def test_het_and_ket_thuc_finish_vietnamese_only_after_a_pause(self):
+        listener=self.listener
+        for phrase in ('hết','kết thúc'):
+            for pause in (.2,.4):
+                listener.dictation_language='vi';listener.phase='typing-recording'
+                listener.recording=Recording();listener.recording.feed(b'a'*32000,True);listener.recording.feed(b'c'*32000,True)
+                with patch.object(listener,'transcribe_and_type',AsyncMock()) as finish:
+                    await listener.recognize('wav2vec2',lambda _:result(phrase),Utterance(b'c'*32000,pause,500,False),self.writer,'7',listener.recognition_context(),64000)
+                    if pause<.35:finish.assert_not_called()
+                    else:
+                        await listener.dictation_job
+                        self.assertEqual(finish.await_args.args[0],b'a'*32000)
+
+    async def test_personal_start_recovers_with_full_4gram_confirmation(self):
+        listener=self.listener
+        decoded=result('nhập lệch',.5);decoded['vietnamese_acoustic']={'typing':True}
+        listener.vietnamese.transcribe.return_value='nhập lệnh'
+        with patch.object(listener,'begin_dictation') as begin:
+            await listener.recognize('wav2vec2',lambda _:decoded,Utterance(b'x'*32000,1,500,False),self.writer,'7',listener.recognition_context())
+            begin.assert_called_once_with('vi')
+
+    async def test_strict_personal_start_survives_misspelling_in_both_decoders(self):
+        decoded=result('ngập lạn',.5)
+        decoded['vietnamese_acoustic']={'typing':True,'typing_confirmed':True}
+        with patch.object(self.listener,'begin_dictation') as begin:
+            await self.listener.recognize('wav2vec2',lambda _:decoded,Utterance(b'x'*32000,1,500,False),self.writer,'7',self.listener.recognition_context())
+            begin.assert_called_once_with('vi')
+        self.listener.vietnamese.transcribe.assert_not_called()
+
+    async def test_personal_start_cannot_override_a_longer_confirmed_sentence(self):
+        listener=self.listener
+        decoded=result('nhập lệch',.5);decoded['vietnamese_acoustic']={'typing':True}
+        listener.vietnamese.transcribe.return_value='tôi muốn nhập lệnh sau'
+        with patch.object(listener,'begin_dictation') as begin:
+            await listener.recognize('wav2vec2',lambda _:decoded,Utterance(b'x'*32000,1,500,False),self.writer,'7',listener.recognition_context())
+            begin.assert_not_called()
+
     async def test_stale_vietnamese_command_cannot_start_after_disable(self):
         listener=self.listener
         def decode(_):listener.recognition_epoch+=1;return result('nhập lệnh')
@@ -90,6 +127,16 @@ class Windows(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(len(list(acoustic_windows(b'x'*200))[0][0]),800)
 
     def test_terminal_vietnamese_commands_only_removed_as_complete_sentence(self):
-        self.assertEqual(terminal_stop('giữ câu này. dừng nhập','vi'),('giữ câu này.','dừng nhập'))
+        self.assertEqual(VIETNAMESE_STOPS,{'hết','kết thúc','dừng nhập','ngừng nhập'})
+        for phrase in VIETNAMESE_STOPS:
+            self.assertEqual(terminal_stop('giữ câu này. '+phrase,'vi'),('giữ câu này.',phrase))
         text='tôi nói dừng nhập trong câu'
         self.assertEqual(terminal_stop(text,'vi'),(text,None))
+
+    def test_vietnamese_personal_samples_do_not_accept_embedded_start_commands(self):
+        decoded=result('tôi muốn gõ câu này',.4);decoded['vietnamese_acoustic']={'typing':True}
+        self.assertFalse(vietnamese_command_match(decoded,True))
+        decoded=result('nhập lệnh',.4);decoded['vietnamese_acoustic']={'typing':True}
+        self.assertTrue(vietnamese_command_match(decoded,True))
+        decoded=result('không rõ',.4);decoded['vietnamese_acoustic']={'typing-stop':True}
+        self.assertTrue(vietnamese_command_match(decoded,False))

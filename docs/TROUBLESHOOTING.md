@@ -95,6 +95,9 @@ user must have write access to `/dev/uinput`; do not run the agent as root or
 make the device world writable. See [dictation setup](DICTATION.md#models-and-setup).
 
 On COSMIC, the draft board follows the output configured for the panel containing
-the status area, falling back to the primary monitor if needed. Xwayland places
-it below the panel without taking focus; native Wayland placement is controlled
+the status area, falling back to the primary monitor if needed. The tray selects
+Xwayland explicitly when available, even if the desktop exports `GDK_BACKEND=wayland`.
+The board uses an overlay so COSMIC cannot activate it in place of the paste target.
+It appears during preparation and stays through recording and insertion.
+Xwayland places it below the panel; native Wayland placement is controlled
 by the compositor.

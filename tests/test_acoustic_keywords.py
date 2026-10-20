@@ -3,6 +3,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import Mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import numpy as np
@@ -11,6 +12,19 @@ from audio_control import SpeechGate
 
 
 class AcousticKeywords(unittest.TestCase):
+    def test_transcript_independent_start_requires_closer_match_and_cross_bank_margin(self):
+        bank=TemplateBank.__new__(TemplateBank)
+        bank.np=np;bank.thresholds={'typing':.45};bank.minimum_margin=.08
+        feature=np.array([[1.,0.]],dtype='float32')
+        bank.rows=[('typing','type this',feature),('negative','ordinary speech',-feature)]
+        near=np.array([[.8,.6]],dtype='float32')
+        broad=np.array([[.7,np.sqrt(.51)]],dtype='float32')
+        self.assertTrue(bank.match(near,'typing',1,strict=True))
+        self.assertTrue(bank.match(broad,'typing',1))
+        self.assertFalse(bank.match(broad,'typing',1,strict=True))
+        other_language=Mock(rows=[('typing','gõ câu',near)])
+        self.assertFalse(bank.match(near,'typing',1,competing=(other_language,),strict=True))
+
     def test_alignment_uses_whole_utterance_and_rejects_extreme_stretch(self):
         a = np.eye(4, dtype='float32')
         self.assertAlmostEqual(whole_distance(a, a, np), 0.)

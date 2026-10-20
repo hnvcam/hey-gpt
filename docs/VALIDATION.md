@@ -111,6 +111,36 @@ English personal commands use a separate energy-assisted speech gate so clear
 speech is not rejected solely because Silero misses it. The original ChatGPT
 Voice activity and hang-up gates are unchanged by that correction.
 
+## 20 October 2026: personal dictation start regression
+
+The previous lexical gate rejected genuine enrolled commands when generic ASR
+misspelled them. Actual GPU replay reproduced this for both languages; the
+Vietnamese 4-gram decoder also misspelled most isolated start commands. Acoustic
+enrollment checks alone had not exercised that controller gate.
+
+Strict personal starts now require distance <= 0.25 and margin >= 0.10 against
+all competing classes and the other personal banks. Existing recordings were
+replayed through the actual recognizers and controller with microphone capture,
+Chrome actions, ready sounds and paste disabled. All **93 items** produced the
+expected start behavior: 10/10 English starts, 10/10 Vietnamese starts and no
+dictation starts on the other 73 items (ordinary speech, stop commands, noise,
+and Voice samples). The longest individual recognition check took 1.54 seconds.
+These recordings include reference clips and previously checked test clips;
+this is regression evidence, not a new blind or continuous-listening evaluation.
+
+The real COSMIC desktop check found that a managed transcript window took focus
+despite GTK's no-focus hints. The final board explicitly selects Xwayland when
+available and uses an overlay. A controlled native Wayland entry retained active
+keyboard focus before, during and after the board appeared. No keys or clipboard
+contents were sent. The board also opens during dictation preparation.
+
+Automated checks: 195 Python tests, with seven GTK tests skipped in the standard
+run and all seven passing separately under Xvfb; 33 page and 28 background
+JavaScript tests passed. These are simulated service/browser checks, distinct
+from the recorded GPU replay and desktop focus check. Live spoken dictation and
+actual paste were not retested; the assistant and recorder services were left
+stopped at the user's request.
+
 ## Remaining limitations
 
 - ChatGPT DOM markers can change. Missing, stale, or ambiguous audio activity

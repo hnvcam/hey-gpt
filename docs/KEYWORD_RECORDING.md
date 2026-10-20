@@ -88,6 +88,36 @@ the Chrome extension. The server binds only to loopback, uses a secret URL,
 checks Origin/Host, and expires after one hour. **Closing the tab does not stop
 recording**: click Stop recording or stop the process to end capture immediately.
 
+## Vietnamese dictation commands
+
+The `typing-vi` profile records **40 items**: five takes each of “nhập lệnh”,
+“gõ câu”, “dừng nhập”, “ngừng nhập”, “hết” and “kết thúc”, eight ordinary sentences
+and two background-noise clips. For each phrase, three takes become acoustic
+references and two are separate checks. Sentences containing these words help
+check false activations. Pause before a stop command and say it as an isolated
+utterance; “hết” inside “tôi chưa nói hết” must not finish dictation.
+
+```sh
+.venv/bin/python tools/keyword_dataset.py serve --profile typing-vi
+```
+
+Open the printed local URL. The microphone stays closed until you click Record.
+Recording pauses and unloads Hey GPT automatically. Wait for READ NOW, say the
+displayed phrase once, and then stay quiet. Click Train after recording. Only
+capture problems require a retake; recognizer misses keep your saved recordings
+for adjustment. The app enables itself after successful installation, loading
+the new samples.
+
+The bank lives in ignored `data/vietnamese-typing-templates/`. English dictation
+and Voice wake/stop banks remain intact. No extra neural model is loaded: the
+same CUDA Wav2Vec2 extracts acoustic features. A strict whole-utterance start
+match can recover a command misspelled by the transcriber; it compares against
+ordinary speech, stop commands, English commands and Voice samples. Broader
+similarity still requires lexical confirmation, optionally through the 4-gram. A trained
+whole-utterance stop match can finish Vietnamese dictation after the required
+pause. The report checks acoustic templates against dev and separate test clips;
+it is not a blind evaluation of the entire live microphone/transcription flow.
+
 ## English typing commands
 
 Run `.venv/bin/python tools/keyword_dataset.py serve --profile typing` and open
@@ -108,8 +138,8 @@ never overwritten.
 
 Personal English matching uses the already-loaded Wav2Vec2 acoustic features on
 the RTX 4060, so it can recognize your typing trigger with Parakeet unloaded.
-Successful training reloads these references without reloading GPU models and
-turns the assistant back on. If you abandon the recorder, turn the agent back on
+Successful training enables the assistant again, loading the new references
+with its models. If you abandon the recorder, turn the agent back on
 from its tray menu. The local recorder expires after an hour; recordings remain
 on disk. The automatic checks do not replace live voice/cursor verification.
 

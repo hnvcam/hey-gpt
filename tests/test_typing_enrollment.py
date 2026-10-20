@@ -31,6 +31,53 @@ class Enrollment(unittest.TestCase):
             self.assertEqual(sum(r['split']=='test' for r in rows),2)
         self.assertTrue(any(r['kind']=='negative' and r['split']=='test' for r in plan))
         self.assertEqual(len(studio.reading_plan()),20)
+
+    def test_vietnamese_plan_covers_six_phrases_with_separate_reference_and_test(self):
+        plan=studio.typing_plan('vi')
+        self.assertEqual(len(plan),40)
+        for phrase in ('nhập lệnh','gõ câu','dừng nhập','ngừng nhập','hết','kết thúc'):
+            rows=[row for row in plan if row['text']==phrase]
+            self.assertEqual(len(rows),5)
+            self.assertEqual(sum(row['split']=='dev' for row in rows),3)
+            self.assertEqual(sum(row['split']=='test' for row in rows),2)
+        self.assertTrue(any(row['kind']=='negative' and 'hết' in row['text'] for row in plan))
+
+    def test_vietnamese_recorder_is_idle_until_record_is_clicked(self):
+        with tempfile.TemporaryDirectory() as directory,patch.object(studio,'capture') as capture:
+            recorder=studio.Studio(Path(directory),{'filtered':'test'},profile='typing-vi')
+            self.assertEqual(recorder.state['phase'],'idle')
+            self.assertEqual(len(recorder.plan),40)
+            capture.assert_not_called()
+
+    def test_vietnamese_install_preserves_english_and_voice_banks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);session=root/'recordings/test';session.mkdir(parents=True)
+            (session/'manifest.json').write_text(json.dumps({'profile':'typing-vi'}))
+            model=root/'models/wav2vec2-base-vietnamese-250h';model.mkdir(parents=True)
+            for name in ('config.json','pytorch_model.bin','vocab.json'):(model/name).write_bytes(b'model')
+            for name in ('typing-templates','keyword-templates'):
+                bank=root/'data'/name;bank.mkdir(parents=True);(bank/'keep').write_text(name)
+            wav=Mock(np=np,model_path=model,device_name='simulated GPU')
+            with patch.object(enroll,'ROOT',root),patch.object(enroll,'checked_clips',return_value=({},{})), \
+                 patch.object(enroll,'Wav2VecVietnamese',return_value=wav),patch.object(enroll,'VoiceActivity'), \
+                 patch.object(enroll,'quality_issues',return_value=[]), \
+                 patch.object(enroll,'build_references',return_value=({'x':np.zeros((3,768),dtype='float32')},[])), \
+                 patch.object(enroll,'TemplateBank'),patch.object(enroll,'check_templates',return_value=([{'passed':True}],{})):
+                enroll.train(session)
+            self.assertTrue((root/'data/vietnamese-typing-templates/templates.npz').exists())
+            for name in ('typing-templates','keyword-templates'):
+                self.assertEqual((root/'data'/name/'keep').read_text(),name)
+
+    def test_training_reenables_unloaded_models_instead_of_hot_reloading_them(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);session=root/'recordings/test';session.mkdir(parents=True)
+            (session/'typing-report.json').write_text(json.dumps({'installed':True,'issues':[]}))
+            recorder=studio.Studio(root,{'filtered':'test'},profile='typing-vi')
+            recorder.session=session;recorder.paused=True
+            with patch.object(recorder,'check_disarmed'),patch.object(studio.subprocess,'run',return_value=Mock(returncode=0)),patch.object(studio,'control') as control:
+                recorder.run_typing_training()
+            control.assert_called_once_with('enable')
+            self.assertFalse(recorder.paused)
     def test_test_audio_never_becomes_a_reference(self):
         plan={'01':dict(id='01',kind='typing',text='typing this',split='dev'),
               '02':dict(id='02',kind='typing-stop',text='end typing',split='dev'),
@@ -93,9 +140,10 @@ class PersonalRuntime(unittest.IsolatedAsyncioTestCase):
         with patch.object(self.listener,'begin_dictation') as begin:
             await self.listener.recognize_english(Utterance(b'x'*32000,1.5,500,False),'7',self.listener.recognition_context(),None)
             begin.assert_called_once()
-        self.listener.english.decode.assert_called_once();self.listener.parakeet.transcribe.assert_not_called()
+        self.listener.english.decode.assert_not_called();self.listener.parakeet.transcribe.assert_not_called()
         self.assertEqual(self.listener.english_stats['personal_matches'],1)
     async def test_personal_similarity_without_spoken_command_cannot_start(self):
+        self.listener.wav2vec.match_typing.return_value=False
         self.listener.english.decode.return_value={'text':'something else','result':[{'conf':.99},{'conf':.99}]}
         with patch.object(self.listener,'begin_dictation') as begin:
             await self.listener.recognize_english(Utterance(b'x'*32000,1.5,500,False),'7',self.listener.recognition_context(),None)

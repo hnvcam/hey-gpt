@@ -75,14 +75,21 @@ class TemplateBank:
         self.thresholds = {'wake': .45, 'stop': .30, 'typing': .45, 'typing-stop': .30}
         self.minimum_margin = .08
 
-    def match(self, features, kind, seconds):
+    def match(self, features, kind, seconds, competing=(), strict=False):
         if kind not in self.thresholds or not .25 <= seconds <= 2.5:
             return False
         distances = [(whole_distance(features, data, self.np), row_kind)
                      for row_kind, _, data in self.rows]
+        # Dictation starts may use personal audio without a generic transcript.
+        # Require a closer match and compare against the other language and
+        # Voice banks as negatives, including their wake and stop commands.
+        for bank in competing:
+            distances.extend((whole_distance(features, data, self.np), None)
+                             for _, _, data in bank.rows)
         own = min((d for d,k in distances if k == kind), default=2.)
         other = min((d for d,k in distances if k != kind), default=2.)
-        return own <= self.thresholds[kind] and other-own >= self.minimum_margin
+        maximum,margin=(.25,.10) if strict else (self.thresholds[kind],self.minimum_margin)
+        return own <= maximum and other-own >= margin
 
 
 def acoustic_accept(result, kind, preceding_silence):

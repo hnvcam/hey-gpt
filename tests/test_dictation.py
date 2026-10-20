@@ -328,13 +328,24 @@ class TriggerReliability(unittest.IsolatedAsyncioTestCase):
     asyncTearDown=Lifecycle.asyncTearDown
     async def test_personal_false_match_cannot_override_full_sentence_transcripts(self):
         self.listener.wav2vec=Mock(typing_templates=True)
-        self.listener.wav2vec.match_typing.return_value=True
+        self.listener.wav2vec.match_typing.return_value=False
         self.listener.english=Mock();self.listener.english.decode.return_value=result('I am typing this sentence')
         self.listener.parakeet.transcribe.return_value='I am typing this sentence.'
         with patch.object(self.listener,'begin_dictation') as begin:
             await self.listener.recognize_english(Utterance(b'x'*64000,1.2,500,False),'7',self.listener.recognition_context(),None)
             begin.assert_not_called()
         self.assertEqual(self.listener.english_stats['matches'],0)
+
+    async def test_strict_personal_start_survives_generic_transcription_errors(self):
+        self.listener.wav2vec=Mock(typing_templates=True)
+        self.listener.wav2vec.match_typing.return_value=True
+        self.listener.english=Mock()
+        with patch.object(self.listener,'begin_dictation') as begin:
+            await self.listener.recognize_english(Utterance(b'x'*64000,1.2,500,False),'7',self.listener.recognition_context(),None)
+            begin.assert_called_once_with()
+        self.listener.wav2vec.match_typing.assert_called_once_with(b'x'*64000,'typing','en',True)
+        self.listener.english.decode.assert_not_called()
+        self.listener.parakeet.transcribe.assert_not_called()
 
     async def test_end_typing_after_short_pause_is_a_command(self):
         self.listener.phase='typing-recording';self.listener.recording=Recording()

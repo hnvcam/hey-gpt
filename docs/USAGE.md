@@ -4,6 +4,10 @@
 
 ## Start a Voice conversation
 
+To reopen Hey GPT after it exits or its tray icon is hidden, search for **Hey GPT**
+in the desktop application launcher and open it. This starts both local services
+and respects your saved automatic listening preference.
+
 Say **“Hey GPT”**, wait for the two ascending ready tones, then ask your question.
 Vietnamese Wav2Vec2 and Silero VAD on the configured RTX 4060 recognize wake and
 stop commands. Optional personal audio samples can improve matching. The Voice

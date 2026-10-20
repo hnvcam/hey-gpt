@@ -17,6 +17,7 @@ def serve(connection, model_path):
         vad = VoiceActivity(Path(__file__).resolve().parent / 'models/silero-vad/silero_vad.jit',
                             model.torch, model.np, model.device)
         connection.send({'device_name': model.device_name, 'templates': bool(model.templates),
+                         'vietnamese_templates':bool(model.vietnamese_templates),
                          'typing_templates': bool(model.typing_templates)})
     except Exception as exc:
         allowed = {'gpu-not-configured', 'cuda-unavailable', 'wrong-cuda-gpu'}
@@ -39,6 +40,7 @@ def serve(connection, model_path):
                 else:
                     raise ValueError('unknown-wake-operation')
                 connection.send({'result': result, 'speech': vad.speech,
+                                 'vietnamese_templates':bool(model.vietnamese_templates),
                                  'probability': vad.probability,
                                  'typing_templates': bool(model.typing_templates)})
             except Exception:
@@ -74,6 +76,7 @@ class WakeModels:
         self.device_name = None
         self.templates = False
         self.typing_templates = False
+        self.vietnamese_templates = False
 
     def load(self):
         # Publish the process before waiting for CUDA so Unload can interrupt a
@@ -96,6 +99,7 @@ class WakeModels:
                 self.device_name = reply['device_name']
                 self.templates = reply['templates']
                 self.typing_templates = reply['typing_templates']
+                self.vietnamese_templates = reply.get('vietnamese_templates',False)
         except BaseException:
             self.close()
             raise
@@ -124,6 +128,7 @@ class WakeModels:
             self.vad.speech = reply['speech']
             self.vad.probability = reply['probability']
             self.typing_templates = reply['typing_templates']
+            self.vietnamese_templates = reply.get('vietnamese_templates',False)
             return reply['result']
 
     def decode(self, pcm):
@@ -132,8 +137,8 @@ class WakeModels:
     def ctc_logits(self, pcm):
         return self.request('ctc_logits',pcm)
 
-    def match_typing(self, pcm, kind):
-        return self.request('match_typing', pcm, kind)
+    def match_typing(self, pcm, kind, language='en', strict=False):
+        return self.request('match_typing', pcm, kind, language, strict)
 
     def reload_typing_templates(self):
         return self.request('reload_typing_templates')

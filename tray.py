@@ -7,6 +7,12 @@ import socket
 import subprocess
 import threading
 import sys
+
+# The transcript board must not take keyboard focus from the paste target.
+# Select Xwayland before GTK initializes, including when the desktop exports
+# GDK_BACKEND=wayland. Keep native Wayland as fallback if X11 is unavailable.
+if os.environ.get('DISPLAY'):
+    os.environ['GDK_BACKEND']='x11,wayland'
 import gi
 
 gi.require_version('Gtk','3.0')
@@ -125,11 +131,12 @@ class App:
 
     def show_board(self):
         if self.board:return
-        # A popup on Xwayland can be placed below the panel without activating
-        # a new toplevel. Native Wayland toplevel placement/focus is compositor-
-        # controlled, so use the existing X display when it is available.
+        # COSMIC activates managed windows even with input focus disabled.
+        # Use an Xwayland overlay so the paste destination keeps keyboard focus.
         if self.board_display is None and os.environ.get('DISPLAY'):
-            self.board_display=Gdk.Display.open(os.environ['DISPLAY'])
+            default=Gdk.Display.get_default()
+            self.board_display=(default if default and default.get_name().startswith(':')
+                                else Gdk.Display.open(os.environ['DISPLAY']))
         display=self.board_display or Gdk.Display.get_default()
         popup=bool(display and display.get_name().startswith(':'))
         board=Gtk.Window(type=Gtk.WindowType.POPUP if popup else Gtk.WindowType.TOPLEVEL)
@@ -152,7 +159,7 @@ class App:
         self.board_text.set_line_wrap(True);self.board_text.set_line_wrap_mode(Pango.WrapMode.WORD_CHAR)
         self.board_text.set_max_width_chars(54)
         scroll.add(self.board_text)
-        note=Gtk.Label(label='Bản nháp cập nhật mỗi 5 giây và có thể thay đổi.\nNói “stop typing” (Anh) hoặc “dừng nhập” (Việt) để kết thúc.\nVăn bản được dán một lần, thay nội dung clipboard; bạn tự nhấn Enter.')
+        note=Gtk.Label(label='Bản nháp cập nhật mỗi 5 giây và có thể thay đổi.\nKết thúc: “stop typing” (Anh); “dừng nhập”, “hết”, “kết thúc” (Việt).\nVăn bản được dán một lần, thay nội dung clipboard; bạn tự nhấn Enter.')
         note.set_xalign(0);box.pack_start(note,False,False,0)
         board.connect('delete-event',self.hide_board)
         monitors=[]
@@ -186,9 +193,7 @@ class App:
         phase=(status or {}).get('dictation',{}).get('phase','idle')
         active=phase.startswith('typing')
         visible=(status or {}).get('dictation',{}).get('settings',{}).get('show_transcript',True)
-        # Loading alone is not a recording. Show the board only after the
-        # intentional trigger has completed preparation and the cue has played.
-        if phase=='typing-recording' and visible and not self.board:self.show_board()
+        if active and visible and not self.board:self.show_board()
         if not active or not visible:
             self.hide_board();return
         if not self.board:return
@@ -266,7 +271,7 @@ class App:
         help=Gtk.Expander(label='Cách sử dụng và kết nối Chrome')
         help_box=Gtk.Box(orientation=Gtk.Orientation.VERTICAL,spacing=10);help_box.set_border_width(10);help.add(help_box)
         self.note(help_box,'Gọi “Hey GPT” để mở Voice. Nói riêng “hết”, “kết thúc”, “dừng lại” hoặc “done” sau một nhịp nghỉ để kết thúc.')
-        self.note(help_box,'Tiếng Anh: “typing this” / “type this”; tiếng Việt: “nhập lệnh” / “gõ câu”. Chờ âm báo rồi đọc. Kết thúc bằng “stop typing” (Anh), “dừng nhập” (Việt) hoặc im lặng. Giữ ô cần nhập được chọn; văn bản được dán qua clipboard. Bạn tự nhấn Enter.')
+        self.note(help_box,'Tiếng Anh: “typing this” / “type this”; tiếng Việt: “nhập lệnh” / “gõ câu”. Chờ âm báo rồi đọc. Kết thúc: “stop typing” (Anh), “dừng nhập” / “hết” / “kết thúc” (Việt) hoặc im lặng. Giữ ô cần nhập được chọn; văn bản được dán qua clipboard. Bạn tự nhấn Enter.')
         self.note(help_box,'Lần đầu: mở chrome://extensions → Developer mode → Load unpacked, chọn thư mục bên dưới. Đăng nhập ChatGPT và cấp quyền micro.')
         folder=Gtk.Entry();folder.set_text(str(ROOT/'extension'));folder.set_editable(False);help_box.pack_start(folder,False,False,0)
         box.pack_start(help,False,False,0)

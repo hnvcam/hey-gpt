@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build personal English command templates; validate before replacing live data."""
+"""Build separate English/Vietnamese command banks; validate before installation."""
 import argparse
 from datetime import datetime
 import hashlib
@@ -45,7 +45,7 @@ def quality_issues(plan, clips, np):
 
 
 def checked_clips(session,manifest):
-    if manifest.get('profile')!='typing':raise ValueError('Select a typing-command recording session.')
+    if manifest.get('profile') not in {'typing','typing-vi'}:raise ValueError('Select a typing-command recording session.')
     plan={row['id']:row for row in manifest['plan']}
     clips={}
     for clip in manifest['clips']:
@@ -97,14 +97,14 @@ def build_references(plan,clips,segments,wav):
     return arrays,refs
 
 
-def check_templates(plan,segments,wav):
+def check_templates(plan,segments,wav,language='en'):
     rows=[];summary={}
     for id,row in plan.items():
         hits={kind:False for kind in KINDS}
         for utterance in segments[id]:
             for kind in KINDS:
                 if kind=='typing-stop' and utterance.preceding_silence+1e-6<.8:continue
-                hits[kind]|=wav.match_typing(utterance.pcm,kind)
+                hits[kind]|=wav.match_typing(utterance.pcm,kind,language,kind=='typing')
         expected=row['kind']
         passed=(all(hit==(expected==kind) for kind,hit in hits.items()))
         rows.append(dict(**sample_details(plan,id),split=row['split'],kind=expected,
@@ -121,6 +121,8 @@ def check_templates(plan,segments,wav):
 def train(session):
     os.umask(0o077)
     manifest=json.loads((session/'manifest.json').read_text())
+    language='vi' if manifest.get('profile')=='typing-vi' else 'en'
+    stem='vietnamese-typing' if language=='vi' else 'typing'
     plan,clips=checked_clips(session,manifest)
     wav=Wav2VecVietnamese(ROOT/'models/wav2vec2-base-vietnamese-250h')
     vad=VoiceActivity(ROOT/'models/silero-vad/silero_vad.jit',wav.torch,wav.np,wav.device)
@@ -130,7 +132,7 @@ def train(session):
     arrays,refs=build_references(plan,clips,segments,wav)
     parent=ROOT/'data';parent.mkdir(mode=0o700,exist_ok=True)
     stamp=datetime.now().strftime('%Y%m%d-%H%M%S-%f')
-    pending=parent/('typing-candidate-'+stamp);pending.mkdir(mode=0o700)
+    pending=parent/(stem+'-candidate-'+stamp);pending.mkdir(mode=0o700)
     wav.np.savez_compressed(pending/'templates.npz',**arrays)
     model=wav.model_path
     meta=dict(schema=1,layer=LAYER,templates=refs,enrollment_manifest=str(session/'manifest.json'),
@@ -138,15 +140,17 @@ def train(session):
               features_sha256=file_hash(pending/'templates.npz'),
               evaluation_note='Only dev clips form references. Test clips are checked separately; retakes are not a blind evaluation.')
     private_json(pending/'templates.json',meta)
-    wav.typing_templates=TemplateBank(pending,model,wav.np)
-    rows,summary=check_templates(plan,segments,wav)
+    bank=TemplateBank(pending,model,wav.np)
+    if language=='vi':wav.vietnamese_templates=bank
+    else:wav.typing_templates=bank
+    rows,summary=check_templates(plan,segments,wav,language)
     installed=all(row['passed'] for row in rows)
     if installed:
-        target=parent/'typing-templates'
-        if target.exists():target.rename(parent/('typing-previous-'+stamp))
+        target=parent/(stem+'-templates')
+        if target.exists():target.rename(parent/(stem+'-previous-'+stamp))
         try:pending.rename(target)
         except BaseException:
-            previous=parent/('typing-previous-'+stamp)
+            previous=parent/(stem+'-previous-'+stamp)
             if previous.exists():previous.rename(target)
             raise
     report=dict(installed=installed,device=wav.device_name,rows=rows,summary=summary,

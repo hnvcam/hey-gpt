@@ -10,7 +10,7 @@ two ascending ready tones before dictating:
 | Language | Start | Spoken finish |
 | --- | --- | --- |
 | English / Parakeet TDT v2 Q8 | “typing this” or “type this” | “stop typing”, “end typing” or “typing end” |
-| Vietnamese / Wav2Vec2 + 4-gram | “nhập lệnh” or “gõ câu” | “dừng nhập” or “ngừng nhập” |
+| Vietnamese / Wav2Vec2 + 4-gram | “nhập lệnh” or “gõ câu” | “dừng nhập”, “ngừng nhập”, “hết” or “kết thúc” |
 
 Pause at least 0.35 seconds before a spoken finish and say it as a separate
 utterance. Commands inside ordinary sentences do not count. You can also finish
@@ -18,8 +18,13 @@ by staying silent (default 5 seconds, configurable from 2–30). Recordings have
 three-minute limit. A final isolated stop phrase is rechecked if live command
 detection missed it. The app returns to wake listening afterward.
 
-Both languages **paste once using the clipboard and Ctrl+V**, preserving Unicode
-and Vietnamese accents. No Enter or Tab is sent; text remains unsent. Each paste
+Both languages **paste once using the clipboard**, preserving Unicode and
+Vietnamese accents. On COSMIC, the app checks the active application's ID just
+before insertion: Tabby, COSMIC Terminal and other recognized terminal apps use
+**Ctrl+Shift+V**; other apps use **Ctrl+V**. If app detection is unavailable, it
+keeps Ctrl+V. This identifies the application, not individual fields or embedded
+terminals inside editors. Window titles and field contents are not retained.
+No alternate shortcut is retried. No Enter or Tab is sent; text remains unsent. Each paste
 replaces the clipboard contents, which may remain in clipboard history until
 cleared. The app does not read or restore your previous clipboard. Review text,
 especially terminal commands, before pressing Enter yourself. The app transcribes
@@ -101,10 +106,17 @@ python3 hey_gpt_ctl.py disable
 python3 hey_gpt_ctl.py typing  # manual English dictation
 ```
 
-Legacy `model-load` / `model-unload` commands alias enable / disable. Personal
-English acoustic templates still require lexical confirmation before starting
-dictation. Vosk can confirm English commands; an already loaded Parakeet checks
-missed phrases. Vietnamese starts require a complete confident Wav2Vec2 phrase.
+Legacy `model-load` / `model-unload` commands alias enable / disable. A strict
+whole-utterance personal match can start English or Vietnamese dictation even
+when a general transcriber misspells your command. It requires acoustic distance
+at most 0.25 and margin at least 0.10 against ordinary speech, stop commands,
+the other language's commands and Voice samples. Broader personal similarity
+still needs the complete lexical phrase. Vosk and loaded Parakeet provide
+English fallback; Wav2Vec2 and the 4-gram decoder provide Vietnamese fallback.
+Vietnamese samples stay in their own bank, separate from English and Voice.
+Whole-utterance personal stop matches still require a pause. See
+[Vietnamese command recording](KEYWORD_RECORDING.md#vietnamese-dictation-commands).
+
 No model is loaded merely to scan background speech after unload. Status exposes
 engine names, language, timings and counters without transcripts. See
 [command recording](KEYWORD_RECORDING.md#english-typing-commands) for English

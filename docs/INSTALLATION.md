@@ -62,7 +62,10 @@ to the actual source, then run:
 ```
 
 The installer registers the Chrome native messaging bridge, creates two systemd
-user services, enables them, and restarts them. The local listener starts
+user services, enables them, and restarts them. It also adds **Hey GPT** to the
+desktop application search. Open that launcher to start the listener and tray
+indicator again after they exit; launching it while running does not create
+duplicate instances. The local listener starts
 automatically at login or service restart in an unlocked Wayland session when
 **Tự động bắt đầu nghe khi khởi động** is enabled in Settings (the default).
 That one preference controls listening and all model loading together. When it

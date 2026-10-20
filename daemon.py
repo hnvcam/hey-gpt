@@ -19,6 +19,7 @@ from acoustic_keywords import acoustic_accept
 from conversation_idle import ConversationIdle
 from dictation import ENGLISH_TRIGGERS, ENGLISH_STOPS, VIETNAMESE_TRIGGERS, VIETNAMESE_STOPS, STOP_PAUSE, command_text, terminal_stop, MAX_SECONDS, Parakeet, EnglishCommands, Recording, command_match, keyboard_text, load_settings, save_settings
 from vietnamese_dictation import VietnameseDictation
+from dictation import vietnamese_command_match
 from diagnostics import trace, trace_error
 
 BASE = Path(__file__).resolve().parent
@@ -164,6 +165,7 @@ class Listener:
                               "vietnamese":self.vietnamese.snapshot(), "language":self.dictation_language,
                               "commands":self.english_state,
                               "personal_templates":bool(self.wav2vec and getattr(self.wav2vec,'typing_templates',None)),
+                              "vietnamese_personal_templates":bool(self.wav2vec and getattr(self.wav2vec,'vietnamese_templates',None)),
                               "command_detection":dict(self.english_stats), "phase":self.phase if self.phase.startswith('typing') else 'idle',
                               "error":self.dictation_error or self.parakeet.error,
                               "completed":self.dictation_count,
@@ -720,8 +722,8 @@ class Listener:
             accepted=False
             engine='personal'
             if self.wav2vec and getattr(self.wav2vec,'typing_templates',None):
-                personal=await asyncio.to_thread(self.wav2vec.match_typing,utterance.pcm,acoustic_kind)
-                accepted=personal and kind!='wake'
+                personal=await asyncio.to_thread(self.wav2vec.match_typing,utterance.pcm,acoustic_kind,'en',kind=='wake') is True
+                accepted=personal
             if not self.result_is_current(context,started):return
             if not accepted:
                 result={}
@@ -729,10 +731,6 @@ class Listener:
                 if self.english:
                     result=await asyncio.wait_for(asyncio.to_thread(self.english.decode,utterance.pcm),3)
                 accepted=command_match(result,phrases)
-                # Personal acoustic similarity alone caused unintended starts.
-                # Even an enrolled voice must say the exact lexical command.
-                if personal and kind=='wake' and command_text(result.get('text','')) in phrases:
-                    accepted=command_match(result,phrases,minimum=.35)
                 if accepted:phrase=command_text(result['text'])
             if not self.result_is_current(context,started):return
             # Parakeet's full English vocabulary can recover words Vosk missed.
@@ -873,12 +871,14 @@ class Listener:
             if not self.result_is_current(context, started):
                 return
             kind = context[1]
-            # Vietnamese dictation is selected only by complete lexical commands.
-            # Personal wake templates must never turn an unrelated phrase into
-            # a dictation start, and an English decoder cannot switch its language.
+            # Vietnamese personal starts use a strict whole-utterance match;
+            # broader acoustic evidence still needs lexical confirmation.
             if engine=='wav2vec2' and (kind=='wake' or kind=='typing-recording' and self.dictation_language=='vi'):
-                phrases=VIETNAMESE_TRIGGERS if kind=='wake' else VIETNAMESE_STOPS
-                matched=command_match(result,phrases)
+                matched=vietnamese_command_match(result,kind=='wake')
+                if (not matched and kind=='wake' and self.vietnamese.state=='ready'
+                        and result.get('vietnamese_acoustic',{}).get('typing') is True):
+                    confirmation=command_text(await self.vietnamese.transcribe(utterance.pcm))
+                    matched=confirmation in VIETNAMESE_TRIGGERS
                 if kind=='typing-recording' and utterance.preceding_silence+1e-6<STOP_PAUSE:matched=False
                 if matched and await unlocked_session(sid) and self.result_is_current(context,started):
                     if kind=='wake':self.begin_dictation('vi')

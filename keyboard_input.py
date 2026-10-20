@@ -6,6 +6,7 @@ import subprocess
 import sys
 import time
 from dictation import keyboard_text
+from paste_target import active_app_id, terminal_app
 
 
 def unlocked(sid):
@@ -27,13 +28,16 @@ def write_text(device, text, sid, sleep=time.sleep):
     # do not read it or restore stale clipboard data over another application's.
     subprocess.run(['wl-copy','--type','text/plain;charset=utf-8'],input=text.encode(),
                    stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=5,check=True)
+    # Query after clipboard ownership is ready, as close as possible to paste.
+    # App identity chooses one chord; never try a second paste automatically.
+    chord = (e.KEY_LEFTCTRL, e.KEY_LEFTSHIFT, e.KEY_V) if terminal_app(active_app_id()) else (e.KEY_LEFTCTRL, e.KEY_V)
     if not unlocked(sid):raise RuntimeError('screen-locked-or-session-unavailable')
     held=set()
     try:
-        for code in (e.KEY_LEFTCTRL,e.KEY_V):
+        for code in chord:
             device.write(e.EV_KEY,code,1);held.add(code);device.syn();sleep(.02)
     finally:
-        for code in (e.KEY_V,e.KEY_LEFTCTRL):
+        for code in reversed(chord):
             if code in held:device.write(e.EV_KEY,code,0)
         device.syn()
 
@@ -41,7 +45,7 @@ def write_text(device, text, sid, sleep=time.sleep):
 def main():
     from evdev import UInput,ecodes as e
     if not shutil.which('wl-copy'):raise RuntimeError('wl-copy-unavailable')
-    with UInput({e.EV_KEY:[e.KEY_LEFTCTRL,e.KEY_V]},name='Hey GPT dictation paste') as keyboard:
+    with UInput({e.EV_KEY:[e.KEY_LEFTCTRL,e.KEY_LEFTSHIFT,e.KEY_V]},name='Hey GPT dictation paste') as keyboard:
         time.sleep(.6)
         print(json.dumps({'state':'ready'}),flush=True)
         for line in sys.stdin:

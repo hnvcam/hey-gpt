@@ -67,6 +67,17 @@ class TrayUI(unittest.TestCase):
         self.app.update(status)
         self.assertIsNone(self.app.board)
 
+    def test_board_uses_xwayland_overlay_without_requesting_keyboard_focus(self):
+        status=copy.deepcopy(self.status)
+        status['dictation']['phase']='typing-loading'
+        self.app.update(status)
+        board=self.app.board
+        self.assertIsNotNone(board)
+        self.assertEqual(board.get_window_type(),Gtk.WindowType.POPUP)
+        self.assertFalse(board.get_accept_focus())
+        self.assertFalse(board.get_focus_on_map())
+        self.assertIn('chuẩn bị',self.app.board_heading.get_text())
+
     def test_offline_settings_show_connection_state(self):
         self.app.update(None);self.app.show_window()
         self.assertFalse(self.app.enabled_item.get_sensitive())
