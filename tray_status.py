@@ -28,7 +28,7 @@ def display(status):
     if state=='WAITING' and status.get('enabled'):return 'waiting','Đang chờ Chrome'
     if status.get('local_mic_open'):
         icon='hearing' if status.get('voice_activity',{}).get('speech') else 'listening'
-        return icon,'Đang nghe · gọi “Hey GPT” hoặc “typing this”'
+        return icon,'Đang nghe · “Hey GPT”, “typing this” hoặc “nhập lệnh”'
     if state=='NEEDS_ACTION':return 'error','Cần kiểm tra ChatGPT trên Chrome'
     if status.get('state')=='ARMING':return 'waiting','Đang chuẩn bị bộ nghe…'
     if status.get('enabled'):return 'waiting','Đang chờ kết nối…'
@@ -54,7 +54,8 @@ def recognizer_text(status):
     typing=status.get('dictation',{})
     lines=[f"Tiếng Việt · Wav2Vec2 (GPU): {model_state(wake.get('state'))}",
            f"Lệnh nhập văn bản · Vosk tiếng Anh (CPU): {model_state(typing.get('commands'))}",
-           f"Văn bản tiếng Anh · Parakeet (GPU): {model_state(typing.get('state'))}",
+           f"Văn bản tiếng Anh · Parakeet (GPU): {model_state(typing.get('state'))} · Q8 v2",
+           f"Văn bản tiếng Việt · KenLM 4-gram (CPU): {model_state(typing.get('vietnamese',{}).get('state'))}",
            f"Phát hiện giọng · Silero (GPU): {model_state(status.get('voice_activity',{}).get('state'))}"]
     if typing.get('error'):lines.append('Nhập giọng nói: '+typing['error'])
     return '\n'.join(lines)

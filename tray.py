@@ -147,12 +147,12 @@ class App:
         scroll=Gtk.ScrolledWindow();scroll.set_policy(Gtk.PolicyType.NEVER,Gtk.PolicyType.AUTOMATIC)
         scroll.set_min_content_height(120);scroll.set_max_content_height(320)
         box.pack_start(scroll,True,True,0)
-        self.board_text=Gtk.Label(label='Nói “typing this” và chờ âm báo.')
+        self.board_text=Gtk.Label(label='Nói “typing this” hoặc “nhập lệnh” và chờ âm báo.')
         self.board_text.set_xalign(0);self.board_text.set_yalign(0)
         self.board_text.set_line_wrap(True);self.board_text.set_line_wrap_mode(Pango.WrapMode.WORD_CHAR)
         self.board_text.set_max_width_chars(54)
         scroll.add(self.board_text)
-        note=Gtk.Label(label='Bản nháp cập nhật mỗi 5 giây và có thể thay đổi.\nNói riêng “stop typing” để kết thúc.\nVăn bản được gõ một lần; bạn tự nhấn Enter.')
+        note=Gtk.Label(label='Bản nháp cập nhật mỗi 5 giây và có thể thay đổi.\nNói “stop typing” (Anh) hoặc “dừng nhập” (Việt) để kết thúc.\nVăn bản được dán một lần, thay nội dung clipboard; bạn tự nhấn Enter.')
         note.set_xalign(0);box.pack_start(note,False,False,0)
         board.connect('delete-event',self.hide_board)
         monitors=[]
@@ -203,10 +203,10 @@ class App:
     def update_dictation(self,status):
         info=(status or {}).get('dictation',{})
         model=info.get('state','unavailable')
-        labels={'ready':'Sẵn sàng nhập tiếng Anh', 'unloaded':'Chưa nạp bộ nhập tiếng Anh',
-                'loading':'Đang nạp bộ nhập tiếng Anh…', 'transcribing':'Đang chuyển giọng nói thành văn bản…'}
+        labels={'ready':'Sẵn sàng nhập giọng nói Anh / Việt', 'unloaded':'Chưa nạp bộ nhập giọng nói',
+                'loading':'Đang nạp bộ nhập giọng nói…', 'transcribing':'Đang chuyển giọng nói thành văn bản…'}
         self.dictation_label.set_text('Không kết nối được dịch vụ' if not status else
-            'Lỗi nhập giọng nói · xem phần Chi tiết' if info.get('error') else labels.get(model,'Bộ nhập tiếng Anh chưa sẵn sàng'))
+            'Lỗi nhập giọng nói · xem phần Chi tiết' if info.get('error') else labels.get(model,'Bộ nhập giọng nói chưa sẵn sàng'))
         settings=info.get('settings',{'auto_listen':True,'silence_seconds':5})
         self.updating_settings=True
         self.auto_listen.set_active(settings['auto_listen'])
@@ -253,7 +253,7 @@ class App:
         self.note(listening,'Bật: nạp toàn bộ mô hình và bắt đầu nghe ngay, cũng như khi đăng nhập. Tắt: dừng nghe, kết thúc Voice và gỡ toàn bộ mô hình.')
         self.note(listening,'Menu “Bật trợ lý” điều khiển phiên hiện tại: bật sẽ nạp mô hình, tắt sẽ gỡ mô hình.')
 
-        typing=self.section(box,'Nhập giọng nói tiếng Anh')
+        typing=self.section(box,'Nhập giọng nói Anh / Việt')
         self.dictation_label=self.note(typing,'')
         self.transcript=Gtk.CheckButton(label='Hiện bảng văn bản khi nhập giọng nói')
         self.transcript.connect('toggled',self.dictation_settings_changed);typing.pack_start(self.transcript,False,False,0)
@@ -266,7 +266,7 @@ class App:
         help=Gtk.Expander(label='Cách sử dụng và kết nối Chrome')
         help_box=Gtk.Box(orientation=Gtk.Orientation.VERTICAL,spacing=10);help_box.set_border_width(10);help.add(help_box)
         self.note(help_box,'Gọi “Hey GPT” để mở Voice. Nói riêng “hết”, “kết thúc”, “dừng lại” hoặc “done” sau một nhịp nghỉ để kết thúc.')
-        self.note(help_box,'Nhập văn bản: nói “typing this”, chờ âm báo rồi nói tiếng Anh. Nói riêng “stop typing” để kết thúc. Giữ ô cần nhập được chọn, dùng bàn phím US; bạn tự nhấn Enter.')
+        self.note(help_box,'Tiếng Anh: “typing this” / “type this”; tiếng Việt: “nhập lệnh” / “gõ câu”. Chờ âm báo rồi đọc. Kết thúc bằng “stop typing” (Anh), “dừng nhập” (Việt) hoặc im lặng. Giữ ô cần nhập được chọn; văn bản được dán qua clipboard. Bạn tự nhấn Enter.')
         self.note(help_box,'Lần đầu: mở chrome://extensions → Developer mode → Load unpacked, chọn thư mục bên dưới. Đăng nhập ChatGPT và cấp quyền micro.')
         folder=Gtk.Entry();folder.set_text(str(ROOT/'extension'));folder.set_editable(False);help_box.pack_start(folder,False,False,0)
         box.pack_start(help,False,False,0)

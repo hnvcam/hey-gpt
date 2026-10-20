@@ -3,7 +3,7 @@
 [English](../README.md)
 
 Trợ lý chạy trên **Pop!_OS 24.04 / Wayland**, kết hợp nghe từ gọi tiếng Việt
-trên máy, ChatGPT Voice trong Chrome và nhập văn bản tiếng Anh bằng giọng nói.
+trên máy, ChatGPT Voice trong Chrome và nhập văn bản tiếng Anh / Việt bằng giọng nói.
 ChatGPT trả lời qua tài khoản đã đăng nhập; không cần khóa OpenAI API và không
 phát sinh phí API riêng. Hạn mức Voice của tài khoản vẫn được áp dụng.
 
@@ -11,7 +11,7 @@ phát sinh phí API riêng. Hạn mức Voice của tài khoản vẫn được 
 
 - Nhận từ gọi “Hey GPT” và lệnh dừng tiếng Việt ngay trên máy.
 - Tự trở lại nghe từ gọi sau khi kết thúc cuộc trò chuyện Voice bình thường.
-- Nhập văn bản tiếng Anh vào ô đang chọn, với bản nháp trực tiếp và nhận dạng trên GPU local.
+- Tiếng Anh dùng Parakeet v2 Q8 (“typing this”); tiếng Việt dùng Wav2Vec2 + 4-gram (“nhập lệnh” / “gõ câu”). Văn bản được dán vào ô đang chọn, giữ nguyên dấu tiếng Việt.
 - Biểu tượng trạng thái, điều khiển mô hình và chẩn đoán trên máy.
 
 Cấu hình hiện tại dùng **NVIDIA RTX 4060**, Python 3.12, Chrome hỗ trợ Native

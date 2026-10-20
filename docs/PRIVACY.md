@@ -4,11 +4,17 @@
 
 ## Audio, text, and diagnostics
 
-Everyday local listening does not save audio or transcripts to disk. English
+Everyday local listening does not save audio or transcripts to disk. Local
 dictation keeps audio and text in memory, with a three-minute recording limit.
 Drafts are delivered only to the local tray, never in status broadcasts, status
 files, browser messages, or logs. Finishing, cancellation, screen lock, and model
 unloading clear the draft.
+
+Finished English and Vietnamese dictation intentionally replaces the desktop
+clipboard and pastes into the focused field with Ctrl+V. The application does
+not read previous clipboard contents. Pasted text may remain in the clipboard
+or desktop clipboard history until cleared; this is separate from the in-memory
+draft. No Enter is sent.
 
 The keyword recorder saves audio only when the user explicitly starts recording.
 These files remain local for replay until deliberately deleted. Closing the
@@ -59,7 +65,11 @@ upstream licenses:
 | NVIDIA `parakeet-tdt-0.6b-v2` | CC BY 4.0 |
 | Vosk small English US 0.15 | Apache 2.0 |
 
-Parakeet is pinned to revision `ae9ad07059c7c739ffaf932226a8fe64ae2620b0`.
+Parakeet v2 Q8 GGUF is pinned to `mudler/parakeet-cpp-gguf` revision
+`741158ae71e64ef5c89385862c18f777d07a97a1`. The runtime is MIT licensed
+parakeet.cpp; the weights retain the NVIDIA model's CC BY 4.0 license.
+The Vietnamese 4-gram comes from the Vietnamese model's pinned repository;
+consult that repository's licensing terms along with its acoustic weights.
 Model references: [NVIDIA Parakeet](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2)
 and [Vosk models](https://alphacephei.com/vosk/models).
 

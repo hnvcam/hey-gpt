@@ -1,7 +1,11 @@
 # GPU models for Vietnamese recognition. Install CUDA torch separately.
-numpy==2.5.4
+numpy==1.26.4
 transformers==4.57.6
 huggingface-hub==0.36.2
 
 # Active CPU detector for English typing commands, including when Parakeet is unloaded.
 vosk==0.3.45
+
+# Local Vietnamese CTC beam decoding with the author's 4-gram language model.
+pyctcdecode==0.5.0
+kenlm==0.3.0

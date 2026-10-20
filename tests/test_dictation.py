@@ -54,7 +54,8 @@ class AudioAndSettings(unittest.TestCase):
 
     def test_no_enter_or_control_characters(self):
         self.assertEqual(keyboard_text('  Hello.\nNext line\t“yes”—it’s fine. '),'Hello. Next line "yes"-it\'s fine.')
-        for bad in ('x\x1by','x\0y','你好'):
+        self.assertEqual(keyboard_text('Tiếng Việt có dấu: nhập lệnh.'),'Tiếng Việt có dấu: nhập lệnh.')
+        for bad in ('x\x1by','x\0y'):
             with self.assertRaises(ValueError):keyboard_text(bad)
 
     def test_settings_persist_and_reject_bad_types(self):
@@ -81,6 +82,11 @@ class Lifecycle(unittest.IsolatedAsyncioTestCase):
         self.listener.parakeet.load=AsyncMock(side_effect=lambda:setattr(self.listener.parakeet,'state','ready'))
         self.listener.parakeet.unload=AsyncMock()
         self.listener.parakeet.transcribe=AsyncMock(return_value='Hello world.')
+        self.listener.vietnamese=Mock(state='ready',error=None)
+        self.listener.vietnamese.snapshot.return_value={'state':'ready','error':None}
+        self.listener.vietnamese.load=AsyncMock()
+        self.listener.vietnamese.unload=AsyncMock()
+        self.listener.vietnamese.transcribe=AsyncMock(return_value='Xin chào thế giới')
         self.writer=Mock();self.writer.is_closing.return_value=False
 
     async def asyncTearDown(self):

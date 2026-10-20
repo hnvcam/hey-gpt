@@ -26,6 +26,12 @@ class ListeningLifecycle(unittest.IsolatedAsyncioTestCase):
             self.listener.parakeet.state = 'unloaded'
         self.listener.parakeet.load = AsyncMock(side_effect=load)
         self.listener.parakeet.unload = AsyncMock(side_effect=unload)
+        self.listener.vietnamese=Mock(state='unloaded',error=None)
+        self.listener.vietnamese.snapshot.side_effect=lambda:{'state':self.listener.vietnamese.state}
+        async def load_vi():self.listener.vietnamese.state='ready'
+        async def unload_vi():self.listener.vietnamese.state='unloaded'
+        self.listener.vietnamese.load=AsyncMock(side_effect=load_vi)
+        self.listener.vietnamese.unload=AsyncMock(side_effect=unload_vi)
         self.worker = Mock(device_name='simulated GPU', templates=False)
         self.worker.vad.speech = False
         self.worker.vad.probability = 0.
@@ -62,6 +68,7 @@ class ListeningLifecycle(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.listener.vad)
         self.assertIsNone(self.listener.english)
         self.assertEqual(self.listener.parakeet.state, 'unloaded')
+        self.assertEqual(self.listener.vietnamese.state, 'unloaded')
 
     async def wait_for_capture(self):
         await asyncio.wait_for(self.capturing.wait(), 2)
@@ -131,6 +138,15 @@ class ListeningLifecycle(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(self.listener.task, 2)
         self.assert_unloaded()
         self.assertEqual(self.listener.detail, 'models-not-ready')
+        self.spawn.assert_not_called()
+
+    async def test_vietnamese_decoder_failure_unloads_gpu_workers_before_listening(self):
+        self.listener.vietnamese.load.side_effect=RuntimeError('missing-language-model')
+        await self.listener.startup()
+        await asyncio.wait_for(self.listener.task,2)
+        self.assert_unloaded()
+        self.listener.parakeet.unload.assert_awaited_once()
+        self.listener.vietnamese.unload.assert_awaited_once()
         self.spawn.assert_not_called()
 
     async def test_disable_during_model_loading_cannot_leave_a_late_model(self):

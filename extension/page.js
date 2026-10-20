@@ -39,7 +39,17 @@
   const endLabels = ['End Voice','Kết thúc cuộc trò chuyện','Kết thúc thoại'];
   const dictLabels = ['Stop dictation','Stop recording','Dừng đọc chính tả','Dừng ghi âm'];
   const responseBusy = () => buttons(['Stop','Stop generating','Stop response','Dừng tạo','Dừng phản hồi','Stop speaking','Dừng nói']).length > 0;
-  const composers = () => [...document.querySelectorAll('[role="textbox"][contenteditable="true"],textarea')].filter(visible);
+  function composers() {
+    const inputs=[...document.querySelectorAll('[role="textbox"][contenteditable="true"],textarea')].filter(visible);
+    // Writing blocks in earlier answers are editable too. Prefer the actual
+    // chat composer markers, without reading answer text or generated drafts.
+    const chat=inputs.filter(el=>el.closest('[data-chatgpt-composer],[data-composer-body],[data-composer-input]') ||
+      el.hasAttribute('data-composer-markdown') || el.id==='prompt-textarea');
+    if(chat.length)return chat;
+    // Older layouts lack composer markers. Keep ambiguity/draft checks while
+    // excluding the site's explicitly identified in-message writing blocks.
+    return inputs.filter(el=>!el.closest('[data-testid="chatgpt-writing-block"]'));
+  }
   const micLabels=['Turn off microphone','Turn on microphone','Tắt micrô','Bật micrô','Tắt micro','Bật micro'];
   const voiceOpen = () => buttons(endLabels).length > 0 || buttons(micLabels).length > 0;
   const dictOpen = () => buttons(dictLabels).length > 0;

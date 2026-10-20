@@ -7,6 +7,33 @@ versions, timings, and test totals describe those runs, not a fresh verification
 of the current working tree. Automated simulations, recorded/synthetic audio,
 and real Chrome/microphone checks are listed separately.
 
+## 20 October 2026: bilingual dictation and Parakeet Q8
+
+Simulated checks: 183 Python tests completed successfully (six GTK tests skipped
+in that run), 33 page and 28 background JavaScript tests passed. All six GTK
+tests also passed separately under Xvfb. Coverage includes language routing,
+Vietnamese accents, bounded CTC windows, whole-phrase command matching,
+clipboard failure/lock handling and model unload after a failed decoder load.
+The application virtual environment passed `pip check`.
+
+Real models, public prerecorded audio: `tools/check_dictation_models.py` loaded
+Parakeet v2 Q8_0 and Wav2Vec2 on the configured RTX 4060, with CPU KenLM 4-gram
+decoding. The parakeet.cpp `speech.wav` fixture returned nonempty English text;
+the Vietnamese author's `audio-test/t1_0001-00010.wav` returned nonempty accented
+Vietnamese text. Measured warm inference was 53 ms for the 7.43-second English
+clip and 24 ms for the 3.74-second Vietnamese clip on this run. These are smoke
+checks, not a WER evaluation or live command-recognition measurement. VAD remained
+responsive after transcription.
+
+After restarting the real services, status reported listening, microphone open,
+Chrome connected, personal templates loaded and all recognizers ready. Idle model
+processes occupied 984 + 560 MiB GPU memory, versus 928 + 4,926 MiB immediately
+before the change. These are observed idle allocations, not peak memory bounds.
+
+Live spoken triggers, spoken finish commands and pasting into a real destination
+field/Chrome were not verified in this update. Clipboard and Ctrl+V events were
+simulated; the real desktop's `/dev/uinput` access was checked by setup.
+
 ## Automated simulations
 
 Automated checks simulate Chrome and microphones, including quiet startup,

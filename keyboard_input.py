@@ -1,17 +1,12 @@
 #!/usr/bin/env python3
-"""Wayland keyboard writer using the user's uinput ACL. No clipboard or Enter."""
+"""Paste Unicode text into the focused Wayland field; never press Enter."""
 import json
-import os
+import shutil
 import subprocess
 import sys
 import time
 from dictation import keyboard_text
 
-# Linux evdev keycodes, US English layout. Shift is the only modifier emitted.
-ROWS=[('1234567890-=',range(2,14)),('qwertyuiop[]',range(16,28)),
-      ("asdfghjkl;'`",[*range(30,41),41]),('\\', [43]),('zxcvbnm,./',range(44,54)),(' ',[57])]
-KEYS={c:code for chars,codes in ROWS for c,code in zip(chars,codes)}
-SHIFTED=dict(zip('!@#$%^&*()_+{}:"~|<>?', '1234567890-=[];\'`\\,./'))
 
 def unlocked(sid):
     try:
@@ -25,27 +20,29 @@ def unlocked(sid):
 def write_text(device, text, sid, sleep=time.sleep):
     from evdev import ecodes as e
     text=keyboard_text(text)
+    if not text:return
+    if not unlocked(sid):raise RuntimeError('screen-locked-or-session-unavailable')
+    # Content travels on stdin, never argv, files, shell commands or logs.
+    # wl-copy returns once the owner is ready. Clipboard replacement is explicit;
+    # do not read it or restore stale clipboard data over another application's.
+    subprocess.run(['wl-copy','--type','text/plain;charset=utf-8'],input=text.encode(),
+                   stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=5,check=True)
     if not unlocked(sid):raise RuntimeError('screen-locked-or-session-unavailable')
     held=set()
     try:
-        for index,char in enumerate(text):
-            if index%32==0 and not unlocked(sid):raise RuntimeError('screen-locked-or-session-unavailable')
-            shift=char.isupper() or char in SHIFTED
-            base=SHIFTED.get(char,char.lower());code=KEYS[base]
-            if shift:device.write(e.EV_KEY,e.KEY_LEFTSHIFT,1);held.add(e.KEY_LEFTSHIFT)
-            device.write(e.EV_KEY,code,1);held.add(code);device.syn();sleep(.003)
-            device.write(e.EV_KEY,code,0);held.discard(code)
-            if shift:device.write(e.EV_KEY,e.KEY_LEFTSHIFT,0);held.discard(e.KEY_LEFTSHIFT)
-            device.syn();sleep(.003)
+        for code in (e.KEY_LEFTCTRL,e.KEY_V):
+            device.write(e.EV_KEY,code,1);held.add(code);device.syn();sleep(.02)
     finally:
-        for code in held:device.write(e.EV_KEY,code,0)
+        for code in (e.KEY_V,e.KEY_LEFTCTRL):
+            if code in held:device.write(e.EV_KEY,code,0)
         device.syn()
 
 
 def main():
     from evdev import UInput,ecodes as e
-    with UInput({e.EV_KEY:sorted(set(KEYS.values())|{e.KEY_LEFTSHIFT})},name='Hey GPT dictation keyboard') as keyboard:
-        time.sleep(.6) # let the compositor discover the new keyboard
+    if not shutil.which('wl-copy'):raise RuntimeError('wl-copy-unavailable')
+    with UInput({e.EV_KEY:[e.KEY_LEFTCTRL,e.KEY_V]},name='Hey GPT dictation paste') as keyboard:
+        time.sleep(.6)
         print(json.dumps({'state':'ready'}),flush=True)
         for line in sys.stdin:
             try:
@@ -53,6 +50,7 @@ def main():
                 write_text(keyboard,request['text'],request['session'])
                 print(json.dumps({'state':'typed'}),flush=True)
             except Exception:
-                print(json.dumps({'state':'error','error':'keyboard-input-failed'}),flush=True)
+                print(json.dumps({'state':'error','error':'clipboard-paste-failed'}),flush=True)
+            finally:request=None;line=''
 
 if __name__=='__main__':main()

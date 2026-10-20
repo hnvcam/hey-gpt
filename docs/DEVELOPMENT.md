@@ -14,7 +14,7 @@ from there. Rerun `install.py` after relocating the project.
 | --- | --- |
 | Service, microphone coordination, conversation state | `daemon.py`, `audio_control.py`, `conversation_idle.py` |
 | Vietnamese recognition and acoustic matching | `wake_worker.py`, `wav2vec_recognizer.py`, `voice_activity.py`, `wake_words.py`, `acoustic_keywords.py` |
-| English dictation and keyboard insertion | `dictation.py`, `parakeet_worker.py`, `keyboard_input.py` |
+| English/Vietnamese dictation and Unicode paste | `dictation.py`, `parakeet_worker.py`, `vietnamese_dictation.py`, `vietnamese_worker.py`, `keyboard_input.py`, `native/` |
 | Local controls and Chrome bridge | `hey_gpt_ctl.py`, `native_host.py` |
 | Desktop indicator, draft board, and diagnostics | `tray.py`, `tray_status.py`, `tray_position.py`, `diagnostics.py`, `icons/` |
 | Chrome extension | `extension/` |

@@ -17,7 +17,8 @@ from wake_worker import WakeModels
 from audio_control import PersonalSpeechGate, SpeechGate, stop_command, rms
 from acoustic_keywords import acoustic_accept
 from conversation_idle import ConversationIdle
-from dictation import ENGLISH_TRIGGERS, ENGLISH_STOPS, STOP_PAUSE, command_text, terminal_stop, MAX_SECONDS, Parakeet, EnglishCommands, Recording, command_match, keyboard_text, load_settings, save_settings
+from dictation import ENGLISH_TRIGGERS, ENGLISH_STOPS, VIETNAMESE_TRIGGERS, VIETNAMESE_STOPS, STOP_PAUSE, command_text, terminal_stop, MAX_SECONDS, Parakeet, EnglishCommands, Recording, command_match, keyboard_text, load_settings, save_settings
+from vietnamese_dictation import VietnameseDictation
 from diagnostics import trace, trace_error
 
 BASE = Path(__file__).resolve().parent
@@ -124,6 +125,8 @@ class Listener:
         self.last_recognizer = "none"
         self.dictation_settings = load_settings()
         self.parakeet = Parakeet(BASE)
+        self.vietnamese = VietnameseDictation(BASE)
+        self.dictation_language = 'en'
         self.model_task = None
         self.dictation_job = None
         self.preview_job = None
@@ -158,6 +161,7 @@ class Listener:
                 "browser_state": self.browser_state, "browser_detail": self.browser_detail,
                 "last_error": self.last_error, "listen_mode": self.phase,
                 "dictation": {**self.parakeet.snapshot(), "settings":dict(self.dictation_settings),
+                              "vietnamese":self.vietnamese.snapshot(), "language":self.dictation_language,
                               "commands":self.english_state,
                               "personal_templates":bool(self.wav2vec and getattr(self.wav2vec,'typing_templates',None)),
                               "command_detection":dict(self.english_stats), "phase":self.phase if self.phase.startswith('typing') else 'idle',
@@ -507,7 +511,11 @@ class Listener:
     async def load_dictation_model(self):
         self.publish(self.state,self.detail,self.mic)
         try:
-            await self.parakeet.load()
+            # Await both outcomes. An early failure must not leave its sibling
+            # loading in the background after Off has released the workers.
+            results=await asyncio.gather(self.parakeet.load(),self.vietnamese.load(),return_exceptions=True)
+            for result in results:
+                if isinstance(result,Exception):trace_error('daemon','model-load-error',result)
         except asyncio.CancelledError:raise
         except Exception as exc:trace_error('daemon','model-load-error',exc)
         self.publish(self.state,self.detail,self.mic)
@@ -530,8 +538,10 @@ class Listener:
             with contextlib.suppress(ProcessLookupError):proc.terminate()
             await proc.wait()
 
-    def begin_dictation(self):
+    def begin_dictation(self, language='en'):
         if not self.enabled or self.phase!='wake':return
+        if language not in {'en','vi'}:return
+        self.dictation_language=language
         self.recognition_epoch+=1
         self.phase='typing-loading';self.phase_since=time.monotonic()
         self.dictation_error=None
@@ -539,13 +549,15 @@ class Listener:
         self.final_stop_candidate=None;self.last_finish_reason=None
         trace('daemon','dictation-start',dictation_id=self.dictation_id)
         self.preview_text='';self.preview_seconds=0.;self.preview_at=0.;self.preview_revision=0
-        self.publish('TYPING_LOADING','preparing-english-dictation',self.mic)
+        self.publish('TYPING_LOADING','preparing-'+('vietnamese' if language=='vi' else 'english')+'-dictation',self.mic)
         self.dictation_job=asyncio.create_task(self.prepare_dictation())
 
     async def prepare_dictation(self):
         try:
             await asyncio.shield(self.start_model_load())
             if self.parakeet.state!='ready':raise RuntimeError('parakeet-load-failed')
+            if self.dictation_language=='vi' and (self.vietnamese.state!='ready' or self.wav2vec is None):
+                raise RuntimeError('vietnamese-model-not-ready')
             await self.ensure_keyboard()
             if not self.enabled or self.phase!='typing-loading':return
             if not await unlocked_session():raise RuntimeError('screen-locked-or-session-unavailable')
@@ -556,7 +568,7 @@ class Listener:
             self.ready_sound.update(state='played',count=self.ready_sound['count']+1,mode='dictation',at=int(time.time()))
             self.recording=Recording(self.dictation_settings['silence_seconds'])
             self.phase='typing-recording';self.phase_since=time.monotonic()
-            self.publish('TYPING_RECORDING','speak-english-stop-typing-or-silence',self.mic)
+            self.publish('TYPING_RECORDING','speak-vietnamese-dung-nhap-or-silence' if self.dictation_language=='vi' else 'speak-english-stop-typing-or-silence',self.mic)
         except asyncio.CancelledError:raise
         except Exception as exc:
             trace_error('daemon','dictation-prepare-error',exc,dictation_id=self.dictation_id)
@@ -607,18 +619,23 @@ class Listener:
 
     def maybe_preview_dictation(self):
         record=self.recording
+        engine=self.vietnamese if self.dictation_language=='vi' else self.parakeet
         if (not record or not record.spoke or record.elapsed<self.preview_at+5 or
-                self.english_busy or self.parakeet.state!='ready' or
+                self.english_busy or engine.state!='ready' or
                 self.preview_job and not self.preview_job.done()):return
         self.preview_at=record.elapsed
         self.preview_job=asyncio.create_task(self.preview_dictation(record,bytes(record.audio),record.elapsed))
+
+    async def transcribe_dictation(self, pcm):
+        engine=self.vietnamese if self.dictation_language=='vi' else self.parakeet
+        return await engine.transcribe(pcm)
 
     async def preview_dictation(self, record, pcm, seconds):
         started=time.monotonic()
         try:
             # Re-decode the entire bounded recording so later context can revise
             # earlier wording. No text is committed to the keyboard here.
-            text,_=terminal_stop(keyboard_text(await self.parakeet.transcribe(pcm)))
+            text,_=terminal_stop(keyboard_text(await self.transcribe_dictation(pcm)),self.dictation_language)
             if (self.enabled and self.phase=='typing-recording' and self.recording is record
                     and await unlocked_session()):
                 self.preview_text=text;self.preview_seconds=round(seconds,1)
@@ -640,14 +657,14 @@ class Listener:
             candidate,self.final_stop_candidate=self.final_stop_candidate,None
             if candidate and pcm:
                 cut,tail=candidate
-                tail_command=command_text(await self.parakeet.transcribe(tail))
-                matched=tail_command in ENGLISH_STOPS
+                tail_command=command_text(await self.transcribe_dictation(tail))
+                matched=tail_command in (VIETNAMESE_STOPS if self.dictation_language=='vi' else ENGLISH_STOPS)
                 trace('daemon','final-stop-check',dictation_id=self.dictation_id,matched=matched,
                       command=tail_command if matched else None)
                 if matched:
                     pcm=pcm[:cut];self.last_finish_reason='spoken-command-final-check'
-            text=keyboard_text(await self.parakeet.transcribe(pcm)) if pcm else ''
-            text,stop=terminal_stop(text)
+            text=keyboard_text(await self.transcribe_dictation(pcm)) if pcm else ''
+            text,stop=terminal_stop(text,self.dictation_language)
             if stop:
                 self.last_finish_reason='spoken-command-final-check'
                 trace('daemon','terminal-command-removed',dictation_id=self.dictation_id,command=stop)
@@ -657,7 +674,7 @@ class Listener:
                 if not sid:raise RuntimeError('screen-locked-or-session-unavailable')
                 await self.ensure_keyboard()
                 self.phase='typing-inserting'
-                self.publish('TYPING_INSERTING','typing-into-focused-field',self.mic)
+                self.publish('TYPING_INSERTING','pasting-into-focused-field',self.mic)
                 self.keyboard.stdin.write(json.dumps({'text':text,'session':sid}).encode()+b'\n')
                 await self.keyboard.stdin.drain()
                 reply=json.loads(await asyncio.wait_for(self.keyboard.stdout.readline(),max(5,len(text)*.015)))
@@ -792,7 +809,8 @@ class Listener:
         self.engine_busy.clear()
         self.engines['wav2vec2'].update(state='unloaded',
                                          device=None, templates=False)
-        await self.parakeet.unload()
+        await asyncio.gather(self.parakeet.unload(),self.vietnamese.unload())
+        self.vietnamese.acoustic=None
         await self.close_keyboard()
         self.dictation_error = None
 
@@ -802,6 +820,7 @@ class Listener:
         try:
             await asyncio.to_thread(worker.load)
             self.wav2vec, self.vad = worker, worker.vad
+            self.vietnamese.acoustic=worker
             self.engines["wav2vec2"]["state"] = "ready"
             self.engines["wav2vec2"]["device"] = self.wav2vec.device_name
             self.engines["wav2vec2"]["templates"] = bool(self.wav2vec.templates)
@@ -836,11 +855,12 @@ class Listener:
             return
         self.engine_busy.add(engine)
         context = self.recognition_context()
-        job = asyncio.create_task(self.recognize(engine, decoder, utterance, writer, sid, context))
+        end=len(self.recording.audio) if self.recording else None
+        job = asyncio.create_task(self.recognize(engine, decoder, utterance, writer, sid, context,end))
         self.recognition_jobs.add(job)
         job.add_done_callback(self.recognition_jobs.discard)
 
-    async def recognize(self, engine, decoder, utterance, writer, sid, context):
+    async def recognize(self, engine, decoder, utterance, writer, sid, context, recording_end=None):
         started = time.monotonic()
         try:
             result = await asyncio.to_thread(decoder, utterance.pcm)
@@ -853,6 +873,20 @@ class Listener:
             if not self.result_is_current(context, started):
                 return
             kind = context[1]
+            # Vietnamese dictation is selected only by complete lexical commands.
+            # Personal wake templates must never turn an unrelated phrase into
+            # a dictation start, and an English decoder cannot switch its language.
+            if engine=='wav2vec2' and (kind=='wake' or kind=='typing-recording' and self.dictation_language=='vi'):
+                phrases=VIETNAMESE_TRIGGERS if kind=='wake' else VIETNAMESE_STOPS
+                matched=command_match(result,phrases)
+                if kind=='typing-recording' and utterance.preceding_silence+1e-6<STOP_PAUSE:matched=False
+                if matched and await unlocked_session(sid) and self.result_is_current(context,started):
+                    if kind=='wake':self.begin_dictation('vi')
+                    elif self.recording and recording_end is not None:
+                        cut=max(0,recording_end-len(utterance.pcm))
+                        self.finish_dictation(cut)
+                    return
+                if kind=='typing-recording':return
             accepted = (wake_match(result, self.wake_profile)
                         if kind == "wake" else stop_command(result, utterance.preceding_silence))
             if engine == 'wav2vec2':
@@ -915,7 +949,7 @@ class Listener:
                                      self.start_model_load()) if job]
             await asyncio.gather(*(asyncio.shield(job) for job in loads))
             if (self.wav2vec is None or self.vad is None or self.english is None
-                    or self.parakeet.state != 'ready'):
+                    or self.parakeet.state != 'ready' or self.vietnamese.state != 'ready'):
                 raise RuntimeError('models-not-ready')
             if not await unlocked_session(sid):
                 raise RuntimeError("screen-locked-or-session-unavailable")
@@ -963,7 +997,10 @@ class Listener:
                     status_at = now + 1
                 if self.phase=='typing-recording' and self.recording:
                     ended=self.recording.feed(data,english_voiced)
-                    if english_utterance and not english_utterance.too_long:self.submit_english(english_utterance,sid)
+                    if english_utterance and not english_utterance.too_long:
+                        if self.dictation_language=='vi':
+                            if self.wav2vec:self.submit_recognition('wav2vec2',self.wav2vec.decode,english_utterance,writer,sid)
+                        else:self.submit_english(english_utterance,sid)
                     if ended and (not self.english_busy or self.recording.elapsed+1e-6>=MAX_SECONDS):self.finish_dictation()
                     elif self.recording:self.maybe_preview_dictation()
                     continue

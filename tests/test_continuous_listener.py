@@ -26,6 +26,9 @@ class ContinuousListener(unittest.IsolatedAsyncioTestCase):
             listener.parakeet.load=AsyncMock()
             listener.parakeet.unload=AsyncMock()
             listener.parakeet.snapshot.return_value={'state':'ready','error':None}
+            listener.vietnamese=Mock(state='ready',error=None)
+            listener.vietnamese.load=AsyncMock();listener.vietnamese.unload=AsyncMock()
+            listener.vietnamese.snapshot.return_value={'state':'ready','error':None}
             browser=Mock();browser.is_closing.return_value=False
             listener.browser=browser
             proc=Mock(returncode=None)

@@ -1,74 +1,88 @@
 #!/usr/bin/env python3
-"""Offline NeMo worker. Protocol on stdout; never log audio or transcripts."""
+"""Persistent Parakeet v2 Q8 GGUF on the configured RTX 4060; no PyTorch."""
+import array
 import base64
-import contextlib
+import ctypes as C
 import json
 import os
 from pathlib import Path
 import sys
 
 ROOT=Path(__file__).resolve().parent
-# Library imports/loaders print progress. Keep the protocol separate and quiet.
-protocol=sys.stdout
-sys.stdout=open(os.devnull,'w')
+MODEL=ROOT/'models/parakeet-tdt-0.6b-v2-q8/tdt-0.6b-v2-q8_0.gguf'
+
+
+def configure_gpu():
+    uuid=json.loads((ROOT/'gpu.local.json').read_text()).get('uuid')
+    if not isinstance(uuid,str) or not uuid.startswith('GPU-'):
+        raise RuntimeError('gpu-not-configured')
+    os.environ['CUDA_VISIBLE_DEVICES']=uuid
+    os.environ['PARAKEET_DEVICE']='CUDA0'
+    os.environ['GGML_CUDA_DISABLE_GRAPHS']='1'
+
+
+class Q8Model:
+    def __init__(self):
+        configure_gpu()
+        self.lib=C.CDLL(str(ROOT/'models/parakeet-cpp/build/libhey_gpt_parakeet.so'))
+        signatures={
+            'parakeet_capi_load':([C.c_char_p],C.c_void_p),
+            'parakeet_capi_free':([C.c_void_p],None),
+            'parakeet_capi_transcribe_pcm':([C.c_void_p,C.POINTER(C.c_float),C.c_int,C.c_int,C.c_int],C.c_void_p),
+            'parakeet_capi_free_string':([C.c_void_p],None),
+            'hey_gpt_parakeet_backend':([],C.c_char_p),
+            'hey_gpt_parakeet_shutdown':([],None),
+            'ggml_backend_dev_by_name':([C.c_char_p],C.c_void_p),
+            'ggml_backend_dev_description':([C.c_void_p],C.c_char_p),
+        }
+        for name,(args,result) in signatures.items():
+            func=getattr(self.lib,name);func.argtypes=args;func.restype=result
+        if self.lib.hey_gpt_parakeet_backend()!=b'CUDA0':raise RuntimeError('cuda-unavailable')
+        dev=self.lib.ggml_backend_dev_by_name(b'CUDA0')
+        if not dev:raise RuntimeError('cuda-unavailable')
+        self.device=self.lib.ggml_backend_dev_description(dev).decode()
+        if 'RTX 4060' not in self.device:raise RuntimeError('wrong-cuda-gpu')
+        self.ctx=self.lib.parakeet_capi_load(os.fsencode(MODEL))
+        if not self.ctx:raise RuntimeError('parakeet-q8-load-failed')
+
+    def transcribe(self, pcm):
+        if not 0<len(pcm)<=180*32000 or len(pcm)%2:raise ValueError('invalid-audio')
+        samples=array.array('h');samples.frombytes(pcm)
+        if sys.byteorder!='little':samples.byteswap()
+        values=array.array('f',(value/32768. for value in samples))
+        data=(C.c_float*len(values)).from_buffer(values)
+        text=self.lib.parakeet_capi_transcribe_pcm(self.ctx,data,len(values),16000,2)
+        if not text:raise RuntimeError('parakeet-q8-transcription-failed')
+        try:return C.string_at(text).decode('utf-8')
+        finally:self.lib.parakeet_capi_free_string(text)
+
+    def close(self):
+        self.lib.parakeet_capi_free(self.ctx);self.ctx=None
+        self.lib.hey_gpt_parakeet_shutdown()
+
 
 def emit(value):
-    protocol.write(json.dumps(value)+'\n');protocol.flush()
+    print(json.dumps(value,ensure_ascii=False),flush=True)
+
 
 def main():
-    config=json.loads((ROOT/'gpu.local.json').read_text())
-    uuid=config.get('uuid')
-    if not isinstance(uuid,str) or not uuid.startswith('GPU-'):raise RuntimeError('gpu-not-configured')
-    os.environ['CUDA_VISIBLE_DEVICES']=uuid
-    os.environ['HF_HUB_OFFLINE']='1';os.environ['TRANSFORMERS_OFFLINE']='1'
-    runtime=Path(os.environ.get('XDG_RUNTIME_DIR',f'/run/user/{os.getuid()}'))/'hey-gpt'
-    os.environ['HF_HOME']=str(runtime/'hf-cache')
-    os.environ['NUMBA_CACHE_DIR']=str(runtime/'numba-cache')
-    os.environ['TORCH_HOME']=str(runtime/'torch-cache')
-    os.environ['MPLCONFIGDIR']=str(runtime/'matplotlib-cache')
-    import numpy as np
-    import torch
-    torch.set_num_threads(2)
-    if not torch.cuda.is_available():raise RuntimeError('cuda-unavailable')
-    name=torch.cuda.get_device_name(0)
-    if 'RTX 4060' not in name:raise RuntimeError('wrong-cuda-gpu')
-    from nemo.collections.asr.models import ASRModel
-    model=ASRModel.restore_from(str(ROOT/'models/parakeet-tdt-0.6b-v2/parakeet-tdt-0.6b-v2.nemo'),map_location='cuda:0')
-    model.eval().to('cuda:0')
-    # No CUDA graph reservations; this shares an 8 GB card with wake detection.
-    from omegaconf import OmegaConf, open_dict
-    decoding=OmegaConf.create(OmegaConf.to_container(model.cfg.decoding,resolve=True))
-    with open_dict(decoding):
-        decoding.strategy='greedy_batch'
-        decoding.greedy.use_cuda_graph_decoder=False
-    model.change_decoding_strategy(decoding)
-    def transcribe(pcm):
-        audio=np.frombuffer(pcm,dtype='<i2').astype(np.float32)/32768.
-        with torch.inference_mode(), torch.autocast('cuda',dtype=torch.bfloat16):
-            result=model.transcribe([audio],batch_size=1,num_workers=0,verbose=False)
-        return result[0].text if hasattr(result[0],'text') else str(result[0])
-    transcribe(b'\0'*32000)
-    torch.cuda.empty_cache()
-    emit({'state':'ready','device':name})
-    for line in sys.stdin.buffer:
-        if len(line)>8*1024*1024:break
-        try:
-            request=json.loads(line)
-            pcm=base64.b64decode(request['audio'],validate=True)
-            if not 0<len(pcm)<=180*32000 or len(pcm)%2:raise ValueError()
-            emit({'text':transcribe(pcm)})
-        except Exception:
-            emit({'error':'transcription-failed'})
-        finally:
-            # Do not retain the previous recording while waiting for another.
-            pcm=None;request=None;line=b''
-            torch.cuda.empty_cache()
+    model=Q8Model()
+    try:
+        model.transcribe(b'\0'*32000)
+        emit({'state':'ready','device':model.device,'engine':'parakeet-v2-q8_0'})
+        while line:=sys.stdin.buffer.readline(8*1024*1024):
+            try:
+                if len(line)>=8*1024*1024:raise ValueError()
+                request=json.loads(line)
+                pcm=base64.b64decode(request['audio'],validate=True)
+                emit({'text':model.transcribe(pcm)})
+            except Exception:emit({'error':'transcription-failed'})
+            finally:pcm=None;request=None;line=b''
+    finally:model.close()
+
 
 if __name__=='__main__':
     try:main()
     except Exception as exc:
-        if os.environ.get('HEY_GPT_WORKER_DEBUG')=='1':
-            import traceback
-            traceback.print_exc(file=sys.stderr)
-        code=str(exc) if str(exc) in {'gpu-not-configured','cuda-unavailable','wrong-cuda-gpu'} else 'parakeet-load-failed'
-        emit({'state':'error','error':code})
+        allowed={'gpu-not-configured','cuda-unavailable','wrong-cuda-gpu'}
+        emit({'state':'error','error':str(exc) if str(exc) in allowed else 'parakeet-q8-load-failed'})

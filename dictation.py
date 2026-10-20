@@ -1,17 +1,17 @@
-"""English dictation state, bounded in-memory audio and isolated GPU worker."""
+"""Local dictation state, bounded in-memory audio and isolated workers."""
 import asyncio
 import base64
 import contextlib
 import json
 import os
 import re
+import sys
 from pathlib import Path
 import time
 import unicodedata
 
 RATE_BYTES = 32000
 MAX_SECONDS = 180
-MODEL_REVISION = 'ae9ad07059c7c739ffaf932226a8fe64ae2620b0'
 
 
 def settings_path():
@@ -51,18 +51,21 @@ def save_settings(value):
 
 ENGLISH_TRIGGERS = frozenset({'typing this', 'type this'})
 ENGLISH_STOPS = frozenset({'stop typing','end typing','typing end'})
+VIETNAMESE_TRIGGERS = frozenset({'nhập lệnh', 'gõ câu'})
+VIETNAMESE_STOPS = frozenset({'dừng nhập', 'ngừng nhập'})
 STOP_PAUSE = .35
 
 
-def terminal_stop(text):
+def terminal_stop(text, language='en'):
     """A final command sentence, never a phrase inside an ordinary sentence."""
-    pattern=r'(?:^|(?<=[.!?])\s+)(stop typing|end typing|typing end)[.!?\s]*$'
+    phrases=VIETNAMESE_STOPS if language=='vi' else ENGLISH_STOPS
+    pattern=r'(?:^|(?<=[.!?])\s+)('+ '|'.join(re.escape(p) for p in sorted(phrases)) +r')[.!?\s]*$'
     match=re.search(pattern,text,re.IGNORECASE)
     return (text[:match.start()].rstrip(),match.group(1).lower()) if match else (text,None)
 
 
 def command_text(text):
-    return ' '.join(re.sub(r"[^\w\s]", ' ', text.casefold()).split()) if isinstance(text,str) else ''
+    return ' '.join(re.sub(r"[^\w\s]", ' ', unicodedata.normalize('NFC',text).casefold()).split()) if isinstance(text,str) else ''
 
 
 def command_match(result, phrases, minimum=.80):
@@ -79,15 +82,13 @@ def command_match(result, phrases, minimum=.80):
 
 
 def keyboard_text(text):
-    """Single-line US keyboard text; never emit control keys or implicit Enter."""
+    """Single-line Unicode text for pasting; preserve Vietnamese accents."""
     if not isinstance(text,str) or len(text)>20000:
         raise ValueError('invalid-dictation-text')
     text=text.translate(str.maketrans({'’':"'", '‘':"'", '“':'"', '”':'"', '—':'-', '–':'-', '…':'...'}))
-    text=' '.join(text.split())
-    text=''.join(c for c in unicodedata.normalize('NFKD',text) if not unicodedata.combining(c))
-    if any(not ' '<=c<='~' for c in text):
+    if any(unicodedata.category(c).startswith('C') and c not in '\n\r\t' for c in text):
         raise ValueError('unsupported-dictation-character')
-    return text
+    return unicodedata.normalize('NFC',' '.join(text.split()))
 
 
 class Recording:
@@ -149,15 +150,17 @@ class Parakeet:
     def __init__(self, root):
         self.root=Path(root);self.proc=None;self.lock=asyncio.Lock()
         self.state='unloaded';self.device=None;self.error=None;self.latency_ms=None
+    worker='parakeet_worker.py'
+    engine='parakeet-v2-q8_0'
     def snapshot(self):
-        return {'state':self.state,'device':self.device,'error':self.error,'latency_ms':self.latency_ms}
+        return {'state':self.state,'device':self.device,'error':self.error,'latency_ms':self.latency_ms,'engine':self.engine}
     async def load(self):
         async with self.lock:
             if self.proc and self.proc.returncode is None and self.state=='ready':return
             self.state='loading';self.error=None
             try:
                 self.proc=await asyncio.create_subprocess_exec(
-                    str(self.root/'.parakeet-venv/bin/python'),'-B',str(self.root/'parakeet_worker.py'),
+                    sys.executable,'-B',str(self.root/self.worker),
                     stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.DEVNULL, limit=1024*1024)
                 reply=json.loads(await asyncio.wait_for(self.proc.stdout.readline(),180))
@@ -172,7 +175,8 @@ class Parakeet:
             if not self.proc or self.state!='ready':raise RuntimeError('parakeet-not-loaded')
             self.state='transcribing';started=time.monotonic()
             try:
-                self.proc.stdin.write(json.dumps({'audio':base64.b64encode(pcm).decode()}).encode()+b'\n')
+                payload=await self.payload(pcm)
+                self.proc.stdin.write(json.dumps(payload).encode()+b'\n')
                 await self.proc.stdin.drain()
                 line=await asyncio.wait_for(self.proc.stdout.readline(),90)
                 reply=json.loads(line)
@@ -183,6 +187,8 @@ class Parakeet:
             except BaseException:
                 await self._close();self.state='error';self.error='parakeet-transcription-failed'
                 raise
+    async def payload(self, pcm):
+        return {'audio':base64.b64encode(pcm).decode()}
     async def _close(self):
         proc,self.proc=self.proc,None
         if proc and proc.returncode is None:

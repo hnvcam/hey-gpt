@@ -1,128 +1,111 @@
-# English keyboard dictation
+# English and Vietnamese dictation
 
 [Project overview](../README.md) · [Installation](INSTALLATION.md) · [Command recording](KEYWORD_RECORDING.md) · [Troubleshooting](TROUBLESHOOTING.md)
 
-## Setup
+## Dictate into a focused field
 
-Install the [local listener](INSTALLATION.md) first. Run all commands from the
-project root.
+Keep the destination field focused. Speak one isolated trigger and wait for the
+two ascending ready tones before dictating:
 
-Transcription uses the official NVIDIA **parakeet-tdt-0.6b-v2**, English only,
-on the RTX 4060 UUID from `gpu.local.json`; it refuses CPU or another GPU. The
-[NVIDIA model](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2) is CC-BY-4.0,
-revision `ae9ad07059c7c739ffaf932226a8fe64ae2620b0`. Its NeMo runtime is isolated
-from the existing Vietnamese wake environment. The offline English command model
-is [Vosk small English US 0.15](https://alphacephei.com/vosk/models) (Apache 2.0).
+| Language | Start | Spoken finish |
+| --- | --- | --- |
+| English / Parakeet TDT v2 Q8 | “typing this” or “type this” | “stop typing”, “end typing” or “typing end” |
+| Vietnamese / Wav2Vec2 + 4-gram | “nhập lệnh” or “gõ câu” | “dừng nhập” or “ngừng nhập” |
 
-One-time setup, after the existing wake dependencies:
+Pause at least 0.35 seconds before a spoken finish and say it as a separate
+utterance. Commands inside ordinary sentences do not count. You can also finish
+by staying silent (default 5 seconds, configurable from 2–30). Recordings have a
+three-minute limit. A final isolated stop phrase is rechecked if live command
+detection missed it. The app returns to wake listening afterward.
+
+Both languages **paste once using the clipboard and Ctrl+V**, preserving Unicode
+and Vietnamese accents. No Enter or Tab is sent; text remains unsent. Each paste
+replaces the clipboard contents, which may remain in clipboard history until
+cleared. The app does not read or restore your previous clipboard. Review text,
+especially terminal commands, before pressing Enter yourself. The app transcribes
+words; it does not interpret Vietnamese dictation as commands to execute.
+
+Linux uinput sends only the paste chord using your existing device ACL; the
+agent never runs as root. `/dev/uinput` must be writable by your desktop user.
+Do not make it world writable. A field must have focus when insertion begins;
+the app cannot inspect another app's cursor on Wayland. Disable, screen lock and
+model unload cancel pending dictation and keyboard work.
+
+## Transcript board
+
+The board shows a revisable draft about every five seconds. Each pass rechecks
+the bounded recording so later context can correct earlier words. The focused
+field is left alone until the final paste. The board does not request keyboard
+focus. Enable or hide it in **Cài đặt → Hiện bảng văn bản khi nhập giọng nói**.
+
+On COSMIC, the board follows the output configured for the panel containing the
+status area. If unavailable it falls back to the primary monitor. Xwayland puts
+the popup below the panel without taking focus; native Wayland placement is
+compositor-controlled. Drafts stay in memory and are delivered only to the local
+tray, never in status files, broadcasts, browser messages or logs. Finishing,
+cancellation, lock and unload clear the draft; pasted text follows the desktop's
+normal clipboard behavior.
+
+## Models and setup
+
+English uses the CC-BY-4.0 NVIDIA **parakeet-tdt-0.6b-v2**, converted to Q8_0 GGUF
+from [mudler/parakeet-cpp-gguf](https://huggingface.co/mudler/parakeet-cpp-gguf),
+revision `741158ae71e64ef5c89385862c18f777d07a97a1`. A persistent
+[parakeet.cpp](https://github.com/mudler/parakeet.cpp) C API context reuses the
+model across requests without PyTorch or NeMo. Runtime source is pinned to
+`5c9b0fbbd8e611d88e47d7e1ebae9bca9b447e8f`. The configured RTX 4060 UUID is
+selected before CUDA initializes. Missing CUDA, CPU fallback and another GPU are
+rejected. CUDA graph reservations are disabled.
+
+Vietnamese shares the existing **Wav2Vec2 Base Vietnamese 250h** on the same
+RTX 4060. There is no second acoustic model copy. The author's **4-gram KenLM**
+from [the Vietnamese model repository](https://huggingface.co/nguyenvulebinh/wav2vec2-base-vietnamese-250h),
+revision `69e9000591623e5a4fc2f502407860bcdc0de0b2`, runs in CPU/system RAM with
+pyctcdecode (beam width 32). Eight-second GPU windows have one-second context on
+each side of a six-second core; overlapping frame logits are trimmed and joined
+for one language-model decode. The CPU decoder has its own process so beam search
+does not block local VAD. Wav2Vec2 and Silero remain on GPU; Vosk English command
+detection remains on CPU.
+
+Complete the [local listener installation](INSTALLATION.md) first, then run from
+the project root with `hf`, `git` and the CUDA toolkit's `nvcc` on PATH:
 
 ```sh
-# Install the system Python keyboard helper and the setup runtime tool.
-sudo apt install python3-evdev
-pipx install uv
-# Both hf (from listener setup) and uv must be on PATH.
+sudo apt install python3-evdev wl-clipboard build-essential cmake
 .venv/bin/python -m pip install -r requirements.txt
 python3 tools/setup_dictation.py
 python3 install.py
 ```
 
-Setup uses `hf` to download the pinned NVIDIA checkpoint and `uv` to create
-`.parakeet-venv`. Models, runtime and local settings stay out of Git. The running
-service has no internet address families and only loads local files. Settings
-are private in `~/.config/hey-gpt/dictation.json`; the service may write only this
-application configuration directory and its private runtime directory.
+Setup downloads pinned files with `hf`, verifies SHA-256 checksums, extracts the
+4-gram model and its vocabulary, and builds CUDA libraries for compute capability
+8.9. The former `.parakeet-venv` / NeMo runtime is unused. Models, libraries and
+personal data stay ignored by Git. Runtime performs no downloads and the service
+is restricted to local Unix sockets. Rebuild the runtime after moving the project.
 
-Typing uses Linux uinput with the desktop user's existing device ACL; the agent
-never runs as root. `/dev/uinput` must be writable by the logged-in desktop user.
-If the device is missing or access is denied, fix the desktop's uinput access
-before using dictation. Do not make the device world writable. Use a **US English
-keyboard layout** with Caps Lock off. Smart quotes/dashes are normalized for this
-keyboard, and line breaks become spaces. The agent emits no Enter, Tab, Ctrl,
-Alt or clipboard shortcuts; review dictated terminal commands and press Enter
-yourself. Disable, screen lock and Unload cancel pending dictation. A field must
-have focus when insertion begins; the agent cannot inspect another app's cursor
-on Wayland, so it types wherever you have placed it.
+## Listening and controls
 
-## Dictate into a focused field
-
-Say **“typing this”**, wait for the two ascending ready tones, then speak English.
-Text is inserted into the currently focused field without opening Chrome or
-moving focus. Finish by either staying silent (default **5 seconds**, configurable
-from 2–30 seconds) or pausing at least **0.35 seconds** and saying **“stop typing”**
-as a separate utterance. “End typing” and “typing end” work too. A final isolated
-phrase is checked again if live command detection missed it or was busy. A final
-command sentence is also removed from the transcript before insertion; mentions
-inside ordinary sentences remain dictation. Recordings are limited to 3 minutes;
-audio and text are kept in memory and are not logged or saved. The agent returns
-to wake listening afterward.
-
-While recording, a **transcript board** shows a revisable draft about every five
-seconds. Each pass rechecks all audio collected so far (up to the existing
-three-minute limit), so the model has the previous speech as context and can
-correct earlier wording. The input field is left alone until the final pass:
-the finished text is typed once and remains unsent. The board does not request
-keyboard focus; keep the destination field focused throughout dictation.
-Enable or hide the board in **Cài đặt → Hiện bảng văn bản khi nhập giọng nói**.
-The tray menu contains only assistant on/off, Open ChatGPT and Settings. On COSMIC, the board
-follows the output configured for the panel containing the status area, even
-when another monitor is marked primary. If that panel/output is unavailable,
-it falls back to the primary monitor. Xwayland places the popup below the panel
-without taking keyboard focus; native Wayland placement is compositor-controlled.
-Drafts stay in memory and are delivered only to the local tray, never in status
-broadcasts, status files, browser messages or logs. Finishing, cancellation,
-screen lock and Unload clear the draft.
-
-## Listening and models
-
-Open **Cài đặt… → Tự động bắt đầu nghe khi khởi động** from the tray menu.
-This is the single startup preference for listening and models:
-
-- On loads Vietnamese Wav2Vec2/Silero, English Vosk and Parakeet, then starts
-  listening. It also starts listening on later logins and service restarts.
-- Off stops listening, requests the end of Voice, cancels dictation and unloads
-  all models, including English Vosk on CPU. Later service starts stay unloaded.
-
-Changes apply immediately and are saved. The tray's **Bật trợ lý** and Chrome's
-on/off buttons control the current session: enabling loads all models; disabling
-unloads them. These temporary controls do not change the startup preference.
-There are no separate preload or GPU-unload settings. Old `model-load` and
-`model-unload` commands are compatibility aliases for enabling and disabling.
-
-All models must be ready before the microphone opens. A model or microphone
-failure stops listening and releases all models, without automatically retrying.
-The former `autoload` preference migrates to the single startup preference.
-
-Transcript visibility and the dictation silence timeout remain under English
-dictation settings. **Chi tiết bộ nhận giọng** shows Vietnamese Wav2Vec2 on GPU,
-English Vosk on CPU, Parakeet on GPU and Silero on GPU.
-
-## Local controls
-
-These controls use the same-user socket and are unavailable to the Chrome extension.
+**Cài đặt → Tự động bắt đầu nghe khi khởi động** is the single startup preference
+for listening and all models. On loads Wav2Vec2/Silero, Parakeet Q8, Vosk and the
+4-gram decoder before opening the microphone. Off stops listening and unloads
+all models. The tray and extension on/off controls affect the current session
+without changing that startup preference. Errors unload the models without an
+automatic retry. Settings remain in `~/.config/hey-gpt/dictation.json`.
 
 ```sh
 python3 hey_gpt_ctl.py settings --auto-listen on
 python3 hey_gpt_ctl.py settings --auto-listen off
 python3 hey_gpt_ctl.py settings --silence 10
-python3 hey_gpt_ctl.py enable   # load all models and listen for this session
-python3 hey_gpt_ctl.py disable  # stop and unload all models
-python3 hey_gpt_ctl.py typing   # manual equivalent of the spoken trigger
+python3 hey_gpt_ctl.py enable
+python3 hey_gpt_ctl.py disable
+python3 hey_gpt_ctl.py typing  # manual English dictation
 ```
 
-## Command recognition
-
-Personal voice similarity alone cannot start dictation: an English recognizer
-must also confirm the complete “typing this”/“type this” command.
-
-When the full-vocabulary English detector misses a
-command and Parakeet is already loaded, Parakeet checks the same isolated audio
-for the entire trigger or stop phrase. This never loads an unloaded model just
-to scan background speech. With Parakeet unloaded, a lower-confidence exact Vosk
-phrase requires agreement from a second command-grammar pass; grammar alone
-cannot wake the assistant. Punctuation is normalized, and phrases inside longer
-sentences still do not trigger. `dictation.command_detection` reports counters,
-recognizer and latency only, without keeping audio or recognized words.
-
-For personal English command enrollment, see [Command recording](KEYWORD_RECORDING.md#english-typing-commands).
-For diagnostics, see [Troubleshooting](TROUBLESHOOTING.md#local-diagnostic-logs).
-Prior automated and GPU results are in [Validation history](VALIDATION.md).
+Legacy `model-load` / `model-unload` commands alias enable / disable. Personal
+English acoustic templates still require lexical confirmation before starting
+dictation. Vosk can confirm English commands; an already loaded Parakeet checks
+missed phrases. Vietnamese starts require a complete confident Wav2Vec2 phrase.
+No model is loaded merely to scan background speech after unload. Status exposes
+engine names, language, timings and counters without transcripts. See
+[command recording](KEYWORD_RECORDING.md#english-typing-commands) for English
+enrollment and [validation history](VALIDATION.md) for verification boundaries.

@@ -34,7 +34,7 @@ def serve(connection, model_path):
                     result = vad.feed(*args)
                 elif action == 'reset':
                     result = vad.reset()
-                elif action in {'decode', 'match_typing', 'reload_typing_templates'}:
+                elif action in {'decode', 'ctc_logits', 'match_typing', 'reload_typing_templates'}:
                     result = getattr(model, action)(*args)
                 else:
                     raise ValueError('unknown-wake-operation')
@@ -128,6 +128,9 @@ class WakeModels:
 
     def decode(self, pcm):
         return self.request('decode', pcm)
+
+    def ctc_logits(self, pcm):
+        return self.request('ctc_logits',pcm)
 
     def match_typing(self, pcm, kind):
         return self.request('match_typing', pcm, kind)

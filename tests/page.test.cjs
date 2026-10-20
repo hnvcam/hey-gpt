@@ -5,12 +5,19 @@ const fs=require('node:fs');
 const path=require('node:path');
 const source=fs.readFileSync(path.join(__dirname,'../extension/page.js'),'utf8');
 
-function fixture({draft='',label='Start Voice',origin='https://chatgpt.com',duplicate=false,already=false,notice=false,flicker=false,afterStopBusy=false,afterStopDisabled=false,busy=false,statusText='',statusLabel='',progress=false,speaking=false,composerDisabled=false,micOnly=false,readyMic=false,bridge=false,turns=[]}={}){
+function fixture({draft='',label='Start Voice',origin='https://chatgpt.com',duplicate=false,already=false,notice=false,flicker=false,afterStopBusy=false,afterStopDisabled=false,busy=false,statusText='',statusLabel='',progress=false,speaking=false,composerDisabled=false,micOnly=false,readyMic=false,bridge=false,turns=[],composerMarker=null,writingBlock=false,ambiguousComposer=false,missingComposer=false}={}){
  let wall=100000;class TestDate extends Date {static now(){return wall;}}
  let clicks=0,recording=already,listener=null,tick=null,messages=[],clock=0,stopped=false;
  const button=name=>({textContent:name,disabled:false,getAttribute:key=>key==='aria-label'?name:null,
   getClientRects:()=>[{}],click:()=>{clicks++;recording=name!=='End Voice';if(name==='End Voice')stopped=true;}});
- const composer={textContent:draft,disabled:composerDisabled,getAttribute:()=>null,getClientRects:()=>[{}]};
+ let writingReads=0;
+ const composer={textContent:draft,disabled:composerDisabled,id:composerMarker==='legacy'?'prompt-textarea':'',
+  getAttribute:()=>null,getClientRects:()=>[{}],
+  hasAttribute:key=>composerMarker==='markdown'&&key==='data-composer-markdown',
+  closest:selector=>composerMarker==='container'&&selector.includes('[data-chatgpt-composer]')?{}:null};
+ const writing={get textContent(){writingReads++;return 'Generated document, not an unsent chat message';},
+  getAttribute:()=>null,getClientRects:()=>[{}],hasAttribute:()=>false,
+  closest:selector=>selector==='[data-testid="chatgpt-writing-block"]'?{}:null};
  const ctx={Date:TestDate,location:{origin},getComputedStyle:()=>({visibility:'visible'}),
   setTimeout:fn=>{clock++;fn();return 1;},setInterval:fn=>{tick=fn;return 2;},clearInterval:()=>{tick=null;},
   chrome:{runtime:{sendMessage:async msg=>messages.push(msg)}},
@@ -25,7 +32,7 @@ function fixture({draft='',label='Start Voice',origin='https://chatgpt.com',dupl
    if(selector==='[role="status"]')return statusText||statusLabel?[{textContent:statusText,getAttribute:key=>key==='aria-label'?statusLabel:null,getClientRects:()=>[{}]}]:[];
    if(selector.includes('role="progressbar"'))return progress?[{getClientRects:()=>[{}]}]:[];
    if(selector.includes('role="alert"'))return notice?[{textContent:'Voice limit reached',getClientRects:()=>[{}]}]:[];
-   return [composer];
+   return [...(writingBlock?[writing]:[]),...(missingComposer?[]:[composer]),...(ambiguousComposer?[{...composer}]:[])];
   }}};
  let bridgePlayback='quiet',bridgeVersion=2,bridgeListener;
  if(bridge){
@@ -44,12 +51,41 @@ function fixture({draft='',label='Start Voice',origin='https://chatgpt.com',dupl
   end:trusted=>{if(trusted&&listener){const end=button('End Voice');listener({isTrusted:true,target:{closest:()=>end}});}recording=false;for(let i=0;i<3;i++)tick?.();},
   setReadiness:(ready,age=0)=>{ctx.heyGPTState.events={ui_state:'unknown',connected:true,microphone_ready:ready,received:wall-age};},
   setNotice:()=>{notice=true;},
-  setDraft:()=>{composer.textContent='nội dung chưa gửi';}};
+  setDraft:()=>{composer.textContent='nội dung chưa gửi';},writingReads:()=>writingReads};
 }
 
 test('preflight does not click; wake clicks once and observes Voice UI',async()=>{
  const f=fixture();assert.equal((await f.run('inspect')).state,'READY');assert.equal(f.clicks(),0);
  assert.equal((await f.run('start')).state,'BROWSER_VOICE');assert.equal(f.clicks(),1);
+});
+test('editable answer writing blocks do not prevent Voice startup or leak their text',async()=>{
+ for(const composerMarker of ['container','markdown','legacy',null]){
+  const f=fixture({writingBlock:true,composerMarker});
+  assert.equal((await f.run('inspect')).state,'READY');assert.equal(f.clicks(),0);
+  assert.equal((await f.run('start')).state,'BROWSER_VOICE');assert.equal(f.clicks(),1);
+  assert.equal(f.writingReads(),0);
+ }
+});
+test('writing blocks cannot hide real chat drafts, missing composers or ambiguous composers',async()=>{
+ for(const composerMarker of ['container','markdown','legacy',null]){
+  for(const [options,detail] of [[{draft:'unsent chat draft'},'composer-has-draft'],
+                               [{ambiguousComposer:true},'composer-not-found'],
+                               [{missingComposer:true},'composer-not-found']]){
+   const f=fixture({writingBlock:true,composerMarker,...options});
+   assert.equal((await f.run('start')).detail,detail);assert.equal(f.clicks(),0);
+   assert.equal((await f.run('recovery-inspect')).canReload,false);
+   assert.equal(f.writingReads(),0);
+  }
+ }
+});
+test('writing-block text does not block quiet Voice idle, normal closure or recovery',async()=>{
+ const f=fixture({writingBlock:true,composerMarker:'container',turns:[turn('assistant')]});
+ await f.run('start');f.setEvents('unknown');
+ assert.equal((await f.run('turn-status')).ui_state,'idle');
+ f.end(false);assert.equal(f.messages.at(-1).userEnded,true);
+ assert.equal((await f.run('ready')).state,'READY');
+ assert.equal((await f.run('recovery-inspect')).canReload,true);
+ assert.equal(f.writingReads(),0);
 });
 test('draft, wrong origin, duplicate, missing button, live limit and existing Voice block',async()=>{
  for(const options of [{draft:'câu chưa gửi'},{origin:'https://example.com'},{duplicate:true},{label:'Send'},{notice:true}]){

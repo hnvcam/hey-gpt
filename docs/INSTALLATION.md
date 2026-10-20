@@ -91,9 +91,12 @@ are in another profile. It reads only the profile name, without cookies or token
 No OpenAI key is required. Your ChatGPT plan and Voice limits still apply;
 the application does not bypass limits or automatically retry Voice after errors.
 
-## English dictation models
+## English and Vietnamese dictation models
 
-Complete [English dictation setup](DICTATION.md#setup) to install English Vosk and
-the isolated Parakeet runtime, then restart the listener. Enabling listening loads
+Complete [dictation setup](DICTATION.md#models-and-setup) to install English Vosk,
+Parakeet v2 Q8 with its CUDA runtime, and Vietnamese KenLM 4-gram decoding, then
+restart the listener. Enabling listening loads
 all models together; if a model is missing or fails, the assistant stops and
-unloads the other models. Keyboard dictation also requires desktop keyboard-device access.
+unloads the other models. Unicode paste requires `wl-clipboard` and desktop
+keyboard-device access for the Ctrl+V chord. KenLM and Vosk run on CPU; acoustic
+recognition runs on the configured RTX 4060.

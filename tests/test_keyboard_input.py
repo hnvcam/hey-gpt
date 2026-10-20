@@ -1,30 +1,39 @@
-"""Keystroke event simulation; does not create an input device."""
+"""Simulated clipboard and paste chord; no real clipboard or input device."""
 import sys
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock,patch
-from keyboard_input import KEYS, SHIFTED, write_text
+from keyboard_input import write_text
+
 
 class Keyboard(unittest.TestCase):
-    def test_every_printable_english_character_has_a_key(self):
-        for value in range(32,127):
-            char=chr(value);self.assertIn(SHIFTED.get(char,char.lower()),KEYS)
-    def test_only_shift_and_printable_keys_are_emitted(self):
+    def setUp(self):
+        self.evdev=patch.dict(sys.modules,{'evdev':SimpleNamespace(ecodes=SimpleNamespace(EV_KEY=1,KEY_LEFTCTRL=29,KEY_V=47))})
+        self.evdev.start();self.addCleanup(self.evdev.stop)
+
+    def test_unicode_pastes_once_without_character_typing_or_enter(self):
+        for text in ('Hello world.','Tiếng Việt: nhập lệnh, gõ câu.'):
+            device=Mock()
+            with patch('keyboard_input.unlocked',return_value=True),patch('keyboard_input.subprocess.run') as copy:
+                write_text(device,text,'7',sleep=lambda _:None)
+            self.assertEqual(copy.call_args.kwargs['input'],text.encode())
+            self.assertNotIn(text,str(copy.call_args.args))
+            self.assertEqual([c.args for c in device.write.call_args_list],[(1,29,1),(1,47,1),(1,47,0),(1,29,0)])
+
+    def test_locked_session_never_copies_or_pastes(self):
         device=Mock()
-        with patch.dict(sys.modules,{'evdev':SimpleNamespace(ecodes=SimpleNamespace(EV_KEY=1,KEY_LEFTSHIFT=42))}),patch('keyboard_input.unlocked',return_value=True):
-            write_text(device,'Hello!\nNext; $HOME', '7',sleep=lambda _:None)
-        events=[call.args for call in device.write.call_args_list]
-        for _,code,_ in events:
-            self.assertIn(code,set(KEYS.values())|{42})
-            self.assertNotIn(code,{28,15,29,56,97,100}) # Enter, Tab, Ctrl, Alt
-        held=set()
-        for _,code,value in events:
-            if value:held.add(code)
-            else:held.discard(code)
-        self.assertFalse(held)
-    def test_lock_midway_aborts_before_more_keys(self):
+        with patch('keyboard_input.unlocked',return_value=False),patch('keyboard_input.subprocess.run') as copy:
+            with self.assertRaises(RuntimeError):write_text(device,'private text','7')
+        copy.assert_not_called();device.write.assert_not_called()
+
+    def test_lock_after_copy_prevents_paste(self):
         device=Mock()
-        with patch.dict(sys.modules,{'evdev':SimpleNamespace(ecodes=SimpleNamespace(EV_KEY=1,KEY_LEFTSHIFT=42))}),patch('keyboard_input.unlocked',side_effect=[True,True,False]):
-            with self.assertRaises(RuntimeError):write_text(device,'a'*100,'7',sleep=lambda _:None)
-        downs=[call for call in device.write.call_args_list if call.args[2]==1]
-        self.assertEqual(len(downs),32)
+        with patch('keyboard_input.unlocked',side_effect=[True,False]),patch('keyboard_input.subprocess.run'):
+            with self.assertRaises(RuntimeError):write_text(device,'private text','7')
+        device.write.assert_not_called()
+
+    def test_copy_failure_never_pastes_old_clipboard(self):
+        device=Mock()
+        with patch('keyboard_input.unlocked',return_value=True),patch('keyboard_input.subprocess.run',side_effect=OSError):
+            with self.assertRaises(OSError):write_text(device,'new text','7')
+        device.write.assert_not_called()

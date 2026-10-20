@@ -8,7 +8,9 @@ Say **“Hey GPT”**, wait for the two ascending ready tones, then ask your que
 Vietnamese Wav2Vec2 and Silero VAD on the configured RTX 4060 recognize wake and
 stop commands. Optional personal audio samples can improve matching. The Voice
 listener stays on the configured GPU. English dictation commands use a separate
-English Vosk detector on CPU; see [English dictation](DICTATION.md).
+English Vosk detector on CPU. Say “nhập lệnh” or “gõ câu” for Vietnamese dictation
+with Wav2Vec2 + 4-gram decoding; see [dictation](DICTATION.md). Both languages paste
+their final text through the clipboard, preserving Vietnamese accents.
 
 If Chrome is closed, the application launches it through systemd user services,
 outside the listener's sandbox. The extension reconnects and uses the attached
@@ -54,7 +56,7 @@ The desktop panel uses distinct monochrome shapes and readable labels:
 | --- | --- | --- |
 | Listening | Microphone | Waiting for a wake command |
 | Hearing | Sound bars | The local microphone detects sound |
-| Dictating | Pencil | Recording English dictation |
+| Dictating | Pencil | Recording English or Vietnamese dictation |
 | Finishing / Loading | Hourglass | Transcribing or loading the model |
 | Typing | Keyboard | Inserting finished text |
 | Voice | Chat bubbles | A browser Voice/dictation session is active |

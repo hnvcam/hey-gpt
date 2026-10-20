@@ -197,3 +197,13 @@ class Wav2VecVietnamese:
                 result['acoustic'] = {kind: bool(self.templates.match(features, kind, len(trimmed)/32000))
                                       for kind in ('wake', 'stop')}
         return result
+
+    def ctc_logits(self, pcm):
+        if not 800<=len(pcm)<=16000*2*8 or len(pcm)%2:
+            raise ValueError('invalid-acoustic-window')
+        audio=self.np.frombuffer(pcm,dtype='<i2').astype('float32')/32768.
+        data=self.processor(audio,sampling_rate=16000,return_tensors='pt')
+        data={key:value.to(self.device) for key,value in data.items()}
+        with self.torch.inference_mode():
+            logits=self.model(**data).logits[0].float().cpu().numpy()
+        return {'shape':list(logits.shape),'data':logits.astype('<f4',copy=False).tobytes()}

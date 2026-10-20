@@ -44,6 +44,13 @@ tab, turn the assistant off and on through that tab's extension popup.
 With the listener enabled and screen unlocked, `python3 hey_gpt_ctl.py wake`
 tests the browser/ready-cue flow without requiring a spoken wake command.
 
+If a wake reaches `OPENING` and fails with `setup-required` after about a minute,
+the extension could not identify the composer or Voice button. Editable writing
+blocks in previous answers must not count as chat composers: the extension uses
+the chat composer's own markers and excludes in-message writing blocks. Only an
+unsent draft in the actual chat input blocks startup. Missing or multiple chat
+composers still stop the operation for inspection.
+
 ## Voice stays open or a stop command is ignored
 
 Speak a stop command as a separate utterance after a pause and after ChatGPT
@@ -81,9 +88,11 @@ local diagnostics in the [dictation guide](DICTATION.md).
 
 Keep the destination field focused. Wayland prevents the assistant from
 inspecting another application's cursor; text goes wherever you place it.
-Use a **US English keyboard layout** with Caps Lock off. The logged-in desktop
+Both languages paste Unicode text through `wl-copy` and Ctrl+V; install
+`wl-clipboard` if paste is unavailable. Each insertion replaces the clipboard.
+The logged-in desktop
 user must have write access to `/dev/uinput`; do not run the agent as root or
-make the device world writable. See [dictation setup](DICTATION.md#setup).
+make the device world writable. See [dictation setup](DICTATION.md#models-and-setup).
 
 On COSMIC, the draft board follows the output configured for the panel containing
 the status area, falling back to the primary monitor if needed. Xwayland places
